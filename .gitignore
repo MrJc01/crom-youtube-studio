@@ -3,6 +3,7 @@ config.local.json
 config.*.local.json
 data/
 web/data.js
+web/data.js.*
 
 # Environment, IDE, runtime state, OS and Python caches
 .env
@@ -11,6 +12,8 @@ web/data.js
 *.pid
 *.sock
 *.tmp
+*.tmp.*
+*.bak
 .vscode/
 .idea/
 __pycache__/

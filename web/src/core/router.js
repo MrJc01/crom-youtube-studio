@@ -493,8 +493,9 @@ export function updateHeaderChrome() {
 
   const appEl = document.getElementById('app');
   const wbEditorOpen = state.view === 'whiteboard' && Boolean(state.activeBoardId);
+  const scriptEditorOpen = state.view === 'scripts' && Boolean(getActiveDoc());
   if (appEl) {
-    appEl.className = `studio-shell view-${state.view}${state.focusMode ? ' is-focus-mode' : ''}${wbEditorOpen ? ' is-wb-editor-open' : ''}`;
+    appEl.className = `studio-shell view-${state.view}${state.focusMode ? ' is-focus-mode' : ''}${wbEditorOpen ? ' is-wb-editor-open' : ''}${scriptEditorOpen ? ' is-script-editor-open' : ''}`;
   }
   document.body.classList.toggle('is-focus-mode', Boolean(state.focusMode));
   document.body.classList.toggle('is-whiteboard-view', state.view === 'whiteboard');
@@ -667,7 +668,23 @@ export function setView(
   if (viewName === 'settings' && !state.settingsChannelKey) {
     state.settingsChannelKey = state.activeChannel;
   }
-  if (docPath) {
+  if (viewName === 'scripts' && !docPath) {
+    state.selectedDocPath = null;
+    state.focusMode = false;
+    state.activeVersion = 'principal';
+    state.versionHistory = null;
+    state.versionFetchedKey = '';
+    state.diffDocPath = '';
+    state.diffFromRef = null;
+    state.diffToRef = null;
+    state.diffResult = null;
+    state.selectedRevPreview = null;
+    state.revPreviewContent = null;
+    state.dirtyBody = null;
+    state.dirtyMeta = null;
+    state.hasUnsavedEdits = false;
+    state.commitMessageDraft = '';
+  } else if (docPath) {
     state.selectedDocPath = docPath;
     state.activeVersion = 'principal';
     state.versionHistory = null;

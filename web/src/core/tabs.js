@@ -197,7 +197,7 @@ export function initTabsFromStorage(route) {
       savedActive.kind === routeTabSpec.kind &&
       savedActive.channel === routeTabSpec.channel &&
       savedActive.view === routeTabSpec.view &&
-      (routeTabSpec.view !== 'scripts' || savedActive.docPath === routeTabSpec.docPath) &&
+      (routeTabSpec.view !== 'scripts' || (savedActive.docPath || null) === (routeTabSpec.docPath || null)) &&
       (routeTabSpec.view !== 'whiteboard' ||
         (savedActive.boardId || null) === (routeTabSpec.boardId || null)) &&
       (routeTabSpec.kind !== 'link' || savedActive.externalUrl === routeTabSpec.externalUrl);

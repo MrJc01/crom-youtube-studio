@@ -902,9 +902,27 @@ async function run() {
     assert.equal(pinnedAcrossPages, true);
     console.log('✔ [2/10] Menu de contexto + Nova Aba + puxador ▾ + pino 📌 entre páginas');
 
-    // 3. Roteiros -> Ecossistema Conectado -> Gravar este roteiro -> /gravar?roteiro= pré-selecionado
-    await chrome.navigate(`${baseUrl}/mrj/roteiros/02-roteiros/rascunhos/2026-11-roteiro-aurora.md`);
-    await chrome.waitFor(`() => Boolean(document.getElementById('inspEcosystemCard')) && Boolean(document.getElementById('ecoRecordScriptBtn'))`, 5000, 'ecosystem card');
+    // 3. Roteiros -> Lista de Roteiros -> Abrir card -> ← Roteiros -> Abrir de novo -> Ecossistema Conectado -> Gravar este roteiro
+    await chrome.navigate(`${baseUrl}/mrj/roteiros/`);
+    await chrome.waitFor(
+      `() => Boolean(document.getElementById('scriptsCardsContainer')) && !document.getElementById('app').classList.contains('is-script-editor-open')`,
+      5000,
+      'scripts list page before editor'
+    );
+    await chrome.click('[data-open-script-card="02-roteiros/rascunhos/2026-11-roteiro-aurora.md"]');
+    await chrome.waitFor(
+      `() => document.getElementById('app').classList.contains('is-script-editor-open') && Boolean(document.getElementById('scriptsBackToListBtn')) && Boolean(document.getElementById('inspEcosystemCard'))`,
+      5000,
+      'script editor opened from list'
+    );
+    await chrome.click('#scriptsBackToListBtn');
+    await chrome.waitFor(
+      `() => Boolean(document.getElementById('scriptsCardsContainer')) && !document.getElementById('app').classList.contains('is-script-editor-open')`,
+      5000,
+      'returned to scripts list'
+    );
+    await chrome.click('[data-open-script-card="02-roteiros/rascunhos/2026-11-roteiro-aurora.md"]');
+    await chrome.waitFor(`() => Boolean(document.getElementById('ecoRecordScriptBtn'))`, 5000, 'ecosystem card');
     await chrome.click('#ecoRecordScriptBtn');
     await chrome.waitFor(
       `() => document.getElementById('app').classList.contains('view-recorder') && window.location.pathname.endsWith('/gravar') && window.location.search.includes('roteiro=')`,

@@ -342,9 +342,10 @@ export function applyLocalDraftOverrides(payload) {
 }
 
 export function getActiveDoc() {
+  if (!state.selectedDocPath) return null;
   const docs = getActiveChannelData().docs || [];
   if (!docs.length) return null;
-  return docs.find((d) => d.path === state.selectedDocPath) || docs[0];
+  return docs.find((d) => d.path === state.selectedDocPath) || null;
 }
 
 export function activeFilename(doc) {

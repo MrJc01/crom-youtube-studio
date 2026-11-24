@@ -1,6 +1,5 @@
-import { MD } from '../core/constants.js';
+import { MD, STATUS_VISUAL, STORAGE_KEY_PREFS } from '../core/constants.js';
 import { copyText, downloadTextFile, formatDatePt, formatNumber, loadJsonStorage, saveJsonStorage, showToast } from '../core/utils.js';
-import { STORAGE_KEY_PREFS } from '../core/constants.js';
 import {
   getActiveChannelData,
   getActiveDoc,
@@ -15,7 +14,7 @@ import {
 } from '../core/state.js';
 import { renderCurrentView, setView, syncBrowserUrl, updateHeaderChrome } from '../core/router.js';
 import { syncActiveTabFromState } from '../core/tabs.js';
-import { openKdenliveModal, openNewVersionModal } from '../core/modals.js';
+import { openKdenliveModal, openNewDocModal, openNewVersionModal } from '../core/modals.js';
 
 export async function loadVersionHistory(docPath, { force = false, skipRender = false } = {}) {
   if (!state.serverMode || !docPath) return null;
@@ -655,12 +654,289 @@ export async function saveCurrentDoc() {
   }
 }
 
+export function backToScriptsList({ skipConfirm = false } = {}) {
+  if (!skipConfirm && state.hasUnsavedEdits) {
+    if (!confirm('Existem alterações não salvas neste roteiro. Deseja voltar para a lista mesmo assim?')) return;
+  }
+  stopPrompter();
+  setView('scripts', null);
+}
+
+function openScriptFromList(docPath, mode = 'read') {
+  state.docMode = mode;
+  setView('scripts', docPath);
+}
+
+function countScriptEcosystemLinks(chData, docPath) {
+  const eco = chData?.projectLinks?.[docPath];
+  if (!eco) return 0;
+  return (
+    (eco.boards?.length || 0) +
+    (eco.recordings?.length || 0) +
+    (eco.notes?.length || 0) +
+    (eco.curadoria?.length || 0) +
+    (eco.kdenlive?.length || 0)
+  );
+}
+
+function getVisibleScriptsForList() {
+  const chData = getActiveChannelData();
+  const docs = chData.docs || [];
+  const q = String(state.scriptsSearch || '').trim().toLowerCase();
+  const stFilter = state.scriptsStatusFilter || 'all';
+  const folderFilter = state.scriptsFolderFilter || 'all';
+  const filtered = docs.filter((d) => {
+    if (stFilter !== 'all' && d.meta.status !== stFilter) return false;
+    if (folderFilter !== 'all' && d.topFolder !== folderFilter) return false;
+    if (q) {
+      const hay = `${d.meta.titulo} ${d.path} ${d.meta.serie} ${d.meta.resumo} ${(d.meta.tags || []).join(' ')}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  return { chData, allDocs: docs, filtered, ch: chData.key || state.activeChannel };
+}
+
+function renderScriptsListCardsHtml(chData, allDocs, filtered, ch) {
+  const layout = state.prefs?.scriptsLayout === 'list' ? 'list' : 'grid';
+  if (allDocs.length === 0) {
+    return `
+      <div class="glass-card wb-empty-state">
+        <div class="wb-empty-icon">📄</div>
+        <h3 style="margin:0; font-size:17px;">Nenhum roteiro ou documento .md neste workspace</h3>
+        <p style="margin:0; max-width:520px; color:var(--text-2); font-size:13px;">
+          Crie seu primeiro roteiro, short ou ideia em Markdown com versionamento automático em <code>.roteiro-git/</code>.
+        </p>
+        <div class="wb-empty-actions">
+          <button type="button" class="btn-sm btn-accent" id="scriptsEmptyCreateBtn">+ Novo Roteiro</button>
+          <button type="button" class="btn-sm" id="scriptsEmptyShortBtn">+ Novo Short</button>
+        </div>
+      </div>
+    `;
+  }
+  if (filtered.length === 0) {
+    return `
+      <div class="glass-card wb-empty-state" style="padding:28px 20px;">
+        <h3 style="margin:0; font-size:15px;">Nenhum roteiro encontrado para esse filtro</h3>
+        <p style="margin:0; color:var(--text-3); font-size:12.5px;">Tente outro termo de busca ou altere os filtros de status e pasta.</p>
+        <div class="wb-empty-actions">
+          <button type="button" class="btn-sm" id="scriptsClearFiltersBtn">Limpar Filtros</button>
+        </div>
+      </div>
+    `;
+  }
+
+  const wrapClass = layout === 'list' ? 'wb-boards-list' : 'wb-boards-grid';
+  const cardExtraClass = layout === 'list' ? ' is-list-row' : '';
+  const cardsHtml = filtered
+    .map((d) => {
+      const st = d.meta.status || 'ideia';
+      const vis = STATUS_VISUAL[st] || STATUS_VISUAL.ideia;
+      const ecoCount = countScriptEcosystemLinks(chData, d.path);
+      const revBadge = d.versioning?.headRev ? `Git ${d.versioning.headRev}` : '';
+      const ctxUrl = `/${ch}/roteiros/${d.path}`;
+      const words = Number(d.stats?.words || 0);
+      return `
+        <article class="wb-board-card${cardExtraClass}" data-open-script-card="${MD.escapeHtml(d.path)}" data-open-doc="${MD.escapeHtml(d.path)}" data-context-url="${MD.escapeHtml(ctxUrl)}" tabindex="0" role="button" aria-label="Abrir roteiro ${MD.escapeHtml(d.meta.titulo || d.path)}">
+          <div class="wb-board-card-main">
+            <div class="wb-board-card-top">
+              <h3 class="wb-board-title">${MD.escapeHtml(d.meta.titulo || d.filename || d.path)}</h3>
+              <span class="status-pill st-${MD.escapeHtml(st)}">${MD.escapeHtml(vis.label)}</span>
+            </div>
+            <div class="wb-board-slug-row">
+              <span class="wb-board-file">${MD.escapeHtml(d.path)}</span>
+              ${d.meta.serie ? `<span class="tag-pill">${MD.escapeHtml(d.meta.serie)}</span>` : ''}
+              ${revBadge ? `<span class="tag-pill">${MD.escapeHtml(revBadge)}</span>` : ''}
+            </div>
+            ${d.meta.resumo ? `<p class="script-card-summary">${MD.escapeHtml(d.meta.resumo)}</p>` : ''}
+            <div class="wb-board-meta">
+              <span>${formatNumber(words)} pal. • ~${d.stats?.speakMinutes || 1} min</span>
+              ${d.meta.duracao_estimada ? `<span>• Alvo ${MD.escapeHtml(d.meta.duracao_estimada)}</span>` : ''}
+              ${ecoCount > 0 ? `<span>• 🔗 ${ecoCount} vínculo${ecoCount === 1 ? '' : 's'}</span>` : ''}
+            </div>
+          </div>
+          <div class="wb-board-actions">
+            <button type="button" class="btn-sm btn-accent" data-sc-open="${MD.escapeHtml(d.path)}">Abrir</button>
+            <button type="button" class="btn-sm" data-sc-edit="${MD.escapeHtml(d.path)}">Editar</button>
+            <button type="button" class="btn-sm" data-sc-prompter="${MD.escapeHtml(d.path)}">Teleprompter</button>
+            <button type="button" class="btn-sm" data-sc-record="${MD.escapeHtml(d.path)}">🎙️ Gravar</button>
+          </div>
+        </article>
+      `;
+    })
+    .join('');
+
+  return `<div class="${wrapClass}">${cardsHtml}</div>`;
+}
+
+function bindScriptsListCardEvents(rootEl, container) {
+  if (!rootEl) return;
+  rootEl.querySelectorAll('.wb-board-card[data-open-script-card]').forEach((card) => {
+    card.onclick = (e) => {
+      if (e.ctrlKey || e.metaKey || e.target.closest('button, a, input, select')) return;
+      openScriptFromList(card.dataset.openScriptCard, 'read');
+    };
+    card.onkeydown = (e) => {
+      if ((e.key === 'Enter' || e.key === ' ') && e.target === card) {
+        e.preventDefault();
+        openScriptFromList(card.dataset.openScriptCard, 'read');
+      }
+    };
+  });
+  rootEl.querySelectorAll('[data-sc-open]').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      openScriptFromList(btn.dataset.scOpen, 'read');
+    };
+  });
+  rootEl.querySelectorAll('[data-sc-edit]').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      openScriptFromList(btn.dataset.scEdit, 'edit');
+    };
+  });
+  rootEl.querySelectorAll('[data-sc-prompter]').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      openScriptFromList(btn.dataset.scPrompter, 'prompter');
+    };
+  });
+  rootEl.querySelectorAll('[data-sc-record]').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      setView('recorder', null, { roteiroPath: btn.dataset.scRecord });
+    };
+  });
+  document.getElementById('scriptsEmptyCreateBtn')?.addEventListener('click', () => openNewDocModal());
+  document.getElementById('scriptsEmptyShortBtn')?.addEventListener('click', () => {
+    openNewDocModal({ type: 'short', serie: 'Shorts & Cortes', folder: '03-shorts' });
+  });
+  document.getElementById('scriptsClearFiltersBtn')?.addEventListener('click', () => {
+    state.scriptsSearch = '';
+    state.scriptsStatusFilter = 'all';
+    state.scriptsFolderFilter = 'all';
+    renderScriptsListView(container);
+  });
+}
+
+function updateScriptsListBodyOnly(container) {
+  const bodyEl = document.getElementById('scriptsCardsContainer');
+  if (!bodyEl) return;
+  const { chData, allDocs, filtered, ch } = getVisibleScriptsForList();
+  bodyEl.innerHTML = renderScriptsListCardsHtml(chData, allDocs, filtered, ch);
+  bindScriptsListCardEvents(bodyEl, container);
+}
+
+export function renderScriptsListView(container) {
+  if (!container) return;
+  const { chData, allDocs, filtered, ch } = getVisibleScriptsForList();
+  const chName = chData.channel?.name || ch;
+  const inProdCount = allDocs.filter((d) => ['roteiro', 'gravando', 'edicao'].includes(d.meta.status)).length;
+  const totalWords = allDocs.reduce((acc, d) => acc + Number(d.stats?.words || 0), 0);
+  const foldersList = Array.from(new Set(allDocs.map((d) => d.topFolder))).sort();
+  const layout = state.prefs?.scriptsLayout === 'list' ? 'list' : 'grid';
+
+  container.innerHTML = `
+    <section class="wb-list-page" id="scriptsListPage">
+      <div class="glass-card wb-list-header">
+        <div class="wb-list-head-top">
+          <div>
+            <h2 style="margin:0; font-size:20px;">Lista de Roteiros • ${MD.escapeHtml(chName)}</h2>
+            <p style="margin:4px 0 0; font-size:12.5px; color:var(--text-2);">
+              Escolha um roteiro, ideia ou documento para abrir o leitor, editor, teleprompter ou histórico de revisões.
+            </p>
+          </div>
+          <div class="wb-list-kpis" id="scriptsListKpis">
+            <span class="wb-kpi-pill"><strong>${formatNumber(allDocs.length)}</strong> arquivo${allDocs.length === 1 ? '' : 's'} .md</span>
+            <span class="wb-kpi-pill"><strong>${formatNumber(inProdCount)}</strong> em produção</span>
+            <span class="wb-kpi-pill"><strong>${formatNumber(totalWords)}</strong> palavras</span>
+          </div>
+        </div>
+
+        <div class="wb-list-toolbar">
+          <div class="wb-list-filters">
+            <input type="search" class="search-box-sm wb-list-search" id="scriptsListSearch" placeholder="Buscar por título, série, pasta ou tag..." value="${MD.escapeHtml(state.scriptsSearch || '')}">
+            <select class="script-list-select" id="scriptsListStatusFilter" aria-label="Filtrar por status">
+              <option value="all"${state.scriptsStatusFilter === 'all' ? ' selected' : ''}>Status: Todos</option>
+              <option value="ideia"${state.scriptsStatusFilter === 'ideia' ? ' selected' : ''}>Ideia</option>
+              <option value="pesquisa"${state.scriptsStatusFilter === 'pesquisa' ? ' selected' : ''}>Pesquisa</option>
+              <option value="roteiro"${state.scriptsStatusFilter === 'roteiro' ? ' selected' : ''}>Roteiro</option>
+              <option value="gravando"${state.scriptsStatusFilter === 'gravando' ? ' selected' : ''}>Gravando</option>
+              <option value="edicao"${state.scriptsStatusFilter === 'edicao' ? ' selected' : ''}>Edição</option>
+              <option value="publicado"${state.scriptsStatusFilter === 'publicado' ? ' selected' : ''}>Publicado</option>
+              <option value="referencia"${state.scriptsStatusFilter === 'referencia' ? ' selected' : ''}>Referência</option>
+            </select>
+            <select class="script-list-select" id="scriptsListFolderFilter" aria-label="Filtrar por pasta">
+              <option value="all"${state.scriptsFolderFilter === 'all' ? ' selected' : ''}>Pasta: Todas</option>
+              ${foldersList.map((f) => `<option value="${MD.escapeHtml(f)}"${state.scriptsFolderFilter === f ? ' selected' : ''}>${MD.escapeHtml(f)}</option>`).join('')}
+            </select>
+            <div class="mode-switch" id="scriptsLayoutSwitch" aria-label="Alternar visualização Lista ou Grade">
+              <button type="button" data-sc-layout="list" class="${layout === 'list' ? 'active' : ''}">☰ Lista</button>
+              <button type="button" data-sc-layout="grid" class="${layout === 'grid' ? 'active' : ''}">▦ Grade</button>
+            </div>
+          </div>
+
+          <div class="wb-list-actions">
+            <button type="button" class="btn-sm btn-accent" id="scriptsListNewBtn">+ Novo Roteiro</button>
+            <button type="button" class="btn-sm" id="scriptsListNewShortBtn">+ Novo Short</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="scriptsCardsContainer">
+        ${renderScriptsListCardsHtml(chData, allDocs, filtered, ch)}
+      </div>
+    </section>
+  `;
+
+  const searchInp = document.getElementById('scriptsListSearch');
+  if (searchInp) {
+    searchInp.oninput = () => {
+      state.scriptsSearch = searchInp.value;
+      updateScriptsListBodyOnly(container);
+    };
+  }
+  const stSel = document.getElementById('scriptsListStatusFilter');
+  if (stSel) {
+    stSel.onchange = () => {
+      state.scriptsStatusFilter = stSel.value;
+      updateScriptsListBodyOnly(container);
+    };
+  }
+  const fldSel = document.getElementById('scriptsListFolderFilter');
+  if (fldSel) {
+    fldSel.onchange = () => {
+      state.scriptsFolderFilter = fldSel.value;
+      updateScriptsListBodyOnly(container);
+    };
+  }
+  container.querySelectorAll('#scriptsLayoutSwitch [data-sc-layout]').forEach((btn) => {
+    btn.onclick = () => {
+      const next = btn.dataset.scLayout === 'list' ? 'list' : 'grid';
+      state.prefs = { ...(state.prefs || {}), scriptsLayout: next };
+      const saved = loadJsonStorage(STORAGE_KEY_PREFS, {});
+      saved.scriptsLayout = next;
+      saveJsonStorage(STORAGE_KEY_PREFS, saved);
+      container.querySelectorAll('#scriptsLayoutSwitch [data-sc-layout]').forEach((b) => b.classList.toggle('active', b === btn));
+      updateScriptsListBodyOnly(container);
+    };
+  });
+
+  document.getElementById('scriptsListNewBtn')?.addEventListener('click', () => openNewDocModal());
+  document.getElementById('scriptsListNewShortBtn')?.addEventListener('click', () => {
+    openNewDocModal({ type: 'short', serie: 'Shorts & Cortes', folder: '03-shorts' });
+  });
+
+  bindScriptsListCardEvents(document.getElementById('scriptsCardsContainer'), container);
+}
+
 export function renderScriptsView(container) {
   const chData = getActiveChannelData();
   const docs = chData.docs || [];
   const activeDoc = getActiveDoc();
-  if (activeDoc && !state.selectedDocPath) {
-    state.selectedDocPath = activeDoc.path;
+  if (!activeDoc) {
+    renderScriptsListView(container);
+    return;
   }
 
   if (state.serverMode && activeDoc) {
@@ -787,6 +1063,7 @@ export function renderScriptsView(container) {
     workspaceHtml = `
       <div class="doc-toolbar-clean">
         <div style="display:flex; align-items:center; gap:8px; min-width:0; flex-wrap:wrap;">
+          <button type="button" class="btn-sm" id="scriptsBackToListBtn" title="Voltar para a lista de roteiros">← Roteiros</button>
           <button type="button" class="icon-btn-sm${!state.scriptsListCollapsed ? ' is-active' : ''}" id="toggleListBtn" title="Mostrar/ocultar lista de roteiros">◧</button>
           <span class="doc-path-chip" title="${MD.escapeHtml(activeDoc.path)}">${MD.escapeHtml(activeDoc.path)}${state.hasUnsavedEdits ? ' •' : ''}</span>
           <div class="mode-switch" id="docModeSwitch">
@@ -1166,6 +1443,8 @@ export function renderScriptsView(container) {
     };
   }
 
+  document.getElementById('scriptsBackToListBtn')?.addEventListener('click', () => backToScriptsList());
+
   const toggleInspBtn = document.getElementById('toggleInspectorBtn');
   if (toggleInspBtn) {
     toggleInspBtn.onclick = () => {
@@ -1523,17 +1802,7 @@ export function renderScriptsView(container) {
       try {
         await persistDeleteDoc(activeDoc.path);
         state.trashChannel = '';
-        state.selectedDocPath = getActiveChannelData().docs[0]?.path || null;
-        state.activeVersion = 'principal';
-        state.versionHistory = null;
-        state.versionFetchedKey = '';
-        state.diffResult = null;
-        state.dirtyBody = null;
-        state.dirtyMeta = null;
-        state.hasUnsavedEdits = false;
-        state.commitMessageDraft = '';
-        updateHeaderChrome();
-        renderScriptsView(container);
+        backToScriptsList({ skipConfirm: true });
         showToast('Arquivo movido para a Lixeira (30 dias).');
       } catch (err) {
         showToast(err.message);

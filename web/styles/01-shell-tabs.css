@@ -541,7 +541,7 @@ body.is-flow-fullscreen .tabstrip-wrap {
   font-size: 17px;
 }
 
-.studio-shell.view-scripts .view-container,
+.studio-shell.view-scripts.is-script-editor-open .view-container,
 .studio-shell.view-whiteboard.is-wb-editor-open .view-container,
 .studio-shell.view-link .view-container {
   display: flex;
@@ -550,7 +550,7 @@ body.is-flow-fullscreen .tabstrip-wrap {
   overflow: hidden;
 }
 
-.studio-shell.view-scripts .view-container {
+.studio-shell.view-scripts.is-script-editor-open .view-container {
   padding: 12px 18px 16px;
 }
 
