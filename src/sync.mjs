@@ -9,10 +9,11 @@ import { listBoards } from './boards.mjs';
 import { fetchChannelAllVideos } from './youtube-scraper.mjs';
 import { loadCuradoria } from './catalog-curadoria.mjs';
 import { listRecordings } from './recordings.mjs';
+import { listUnifiedAudios } from './tts.mjs';
 
 export { slugify };
 
-const IGNORED_DIRS = new Set(['studio', '.git', 'node_modules', 'gravacoes', 'quadros']);
+const IGNORED_DIRS = new Set(['studio', '.git', 'node_modules', 'gravacoes', 'quadros', 'narracoes']);
 
 const STATUS_ORDER = [
   'ideia',
@@ -388,6 +389,7 @@ function computeProjectLinks({
   videos,
   boards,
   recordingsRes,
+  narrationsList,
   notesList,
   curadoria,
   kdenliveSummary,
@@ -400,6 +402,7 @@ function computeProjectLinks({
       links[clean] = {
         boards: [],
         recordings: [],
+        narrations: [],
         notes: [],
         curadoria: [],
         kdenlive: [],
@@ -445,6 +448,25 @@ function computeProjectLinks({
         id: note.id,
         title: note.title || '',
         color: note.color || 'default',
+      });
+    }
+  }
+
+  for (const nar of narrationsList || []) {
+    if (!nar || !nar.docPath) continue;
+    const entry = ensure(nar.docPath);
+    if (entry) {
+      entry.narrations.push({
+        id: nar.id,
+        title: nar.title || nar.fileName || '',
+        relPath: nar.relPath || '',
+        origin: nar.origin || 'pagina-narracao',
+        category: nar.category || 'geral',
+        voiceId: nar.voiceId || '',
+        voiceName: nar.voiceName || '',
+        docVersion: nar.docVersion || 'principal',
+        durationSec: Number(nar.durationSec || 0),
+        createdAt: nar.createdAt || '',
       });
     }
   }
@@ -859,6 +881,16 @@ export function buildChannelState(ch, config = null, kdenliveSummary = null) {
     0
   );
 
+  let narrationsList = [];
+  if (workspaceExists) {
+    try {
+      narrationsList = listUnifiedAudios(wsPath, { includeWorkspaceAudio: false });
+    } catch {
+      narrationsList = [];
+    }
+  }
+  const narrationsCount = narrationsList.length;
+
   const quarantineCount = workspaceExists ? countQuarantineFiles(wsPath) : 0;
   let trashCount = 0;
   if (workspaceExists) {
@@ -876,6 +908,7 @@ export function buildChannelState(ch, config = null, kdenliveSummary = null) {
     videos,
     boards,
     recordingsRes,
+    narrationsList,
     notesList,
     curadoria,
     kdenliveSummary: effectiveKdenlive,
@@ -901,6 +934,7 @@ export function buildChannelState(ch, config = null, kdenliveSummary = null) {
     curadoria,
     notesCount,
     recordingsCount,
+    narrationsCount,
     projectLinks,
     health,
     stats: {
@@ -913,6 +947,7 @@ export function buildChannelState(ch, config = null, kdenliveSummary = null) {
       boardsCount: boards.length,
       notesCount,
       recordingsCount,
+      narrationsCount,
       quarantineCount,
       trashCount,
     },

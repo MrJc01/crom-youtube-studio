@@ -129,6 +129,47 @@ export const state = {
     activePlayer: null,
     convertingKey: '',
   },
+  narrationState: {
+    loadedChannel: '',
+    loading: false,
+    generating: false,
+    downloadingModel: false,
+    env: null,
+    presets: [],
+    categories: [],
+    items: [],
+    sourceTab: 'text', // 'text' | 'script' | 'multivoice'
+    mode: 'single', // 'single' | 'multivoice'
+    selectedPresetId: 'mrj-pocket',
+    secondaryPresetId: 'crom-j',
+    text: '',
+    title: '',
+    category: 'teste-voz',
+    selectedDocPath: '',
+    selectedDocVersion: 'principal',
+    cleanMarkdown: true,
+    usePronunciationDict: true,
+    loudnorm: false,
+    // Pocket TTS controls
+    temperature: 0.3,
+    pauseMs: 220,
+    // Piper controls
+    lengthScale: 1.5,
+    noiseScale: 0.67,
+    noiseW: 0.8,
+    sentenceSilence: 0.2,
+    // FFmpeg effects
+    pitchShift: 1.0,
+    reverb: 0,
+    bassDb: 0,
+    trebleDb: 0,
+    // Library filters
+    filterOrigin: 'all',
+    filterCategory: 'all',
+    filterVoice: 'all',
+    filterSearch: '',
+    activePlayerId: '',
+  },
   notesState: {
     notes: [],
     gistSync: null,

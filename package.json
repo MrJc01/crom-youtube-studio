@@ -12,6 +12,7 @@
     "sync:youtube": "node src/sync.mjs --youtube",
     "start": "node src/server.mjs",
     "roteiro": "node src/roteiro-git.mjs",
+    "narrar": "node src/tts-cli.mjs",
     "build:whiteboard": "node scripts/build-whiteboard.mjs",
     "build:web": "node scripts/build-web.mjs",
     "build": "npm run build:whiteboard && npm run build:web",

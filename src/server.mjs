@@ -17,7 +17,9 @@ import { sendJson, serveStatic } from './routes/http-utils.mjs';
 import { handleNotesRoutes } from './routes/notes.mjs';
 import { handleRecordingsRoutes } from './routes/recordings.mjs';
 import { handleRemoteRoutes } from './routes/remote.mjs';
+import { handleTtsRoutes } from './routes/tts.mjs';
 import { createStateCache } from './state-cache.mjs';
+import { NARRATIONS_DIR_NAME } from './tts.mjs';
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -27,6 +29,7 @@ const ROUTE_HANDLERS = [
   handleBoardsRoutes,
   handleCatalogRoutes,
   handleRecordingsRoutes,
+  handleTtsRoutes,
   handleNotesRoutes,
   handleRemoteRoutes,
 ];
@@ -40,6 +43,8 @@ function isIgnoredWatchPath(rel, base) {
     rel.startsWith(`${STUDIO_DATA_DIR_NAME}/`) ||
     rel === RECORDINGS_DIR_NAME ||
     rel.startsWith(`${RECORDINGS_DIR_NAME}/`) ||
+    rel === NARRATIONS_DIR_NAME ||
+    rel.startsWith(`${NARRATIONS_DIR_NAME}/`) ||
     base.endsWith('.swp') ||
     base.endsWith('.swo') ||
     base.endsWith('.tmp') ||

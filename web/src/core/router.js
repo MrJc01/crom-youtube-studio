@@ -592,6 +592,9 @@ export function switchChannel(channelKey, { preserveView = true } = {}) {
   state.recorder.autoSuggestedTitle = '';
   state.recorder.sessions = [];
   state.recorder.sessionsChannel = '';
+  state.narrationState.loadedChannel = '';
+  state.narrationState.items = [];
+  state.narrationState.activePlayerId = '';
   state.notesState.composerExpanded = false;
   state.notesState.notes = [];
   state.notesState.channel = '';

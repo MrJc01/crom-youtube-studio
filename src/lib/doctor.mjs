@@ -8,6 +8,7 @@ import { REPO_ROOT, loadConfig } from '../config.mjs';
 import { resolveFfmpegPath } from '../recordings.mjs';
 import { resolveNgrokPath } from '../remote-access.mjs';
 import { parseFrontmatter } from '../sync.mjs';
+import { discoverTtsEnvironment } from '../tts.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -430,6 +431,7 @@ export async function runDoctor(passedConfig = null) {
   // 7. System binaries
   const ffmpegPath = resolveFfmpegPath();
   const ngrokPath = resolveNgrokPath();
+  const ttsEnv = discoverTtsEnvironment({ kdenliveRoot: config.kdenliveRoot });
   const [ghPath, tarPath] = await Promise.all([resolveBinaryPath('gh'), resolveBinaryPath('tar')]);
 
   const tools = {
@@ -437,6 +439,17 @@ export async function runDoctor(passedConfig = null) {
     gh: { available: Boolean(ghPath), path: ghPath },
     ngrok: { available: Boolean(ngrokPath), path: ngrokPath },
     tar: { available: Boolean(tarPath), path: tarPath },
+    pocketTts: {
+      available: ttsEnv.pocketTts.available,
+      path: ttsEnv.pocketTts.pythonPath || ttsEnv.pocketTts.dir || '',
+      voices: ttsEnv.pocketTts.voices,
+    },
+    piper: {
+      available: ttsEnv.piper.binaryAvailable,
+      path: ttsEnv.piper.binaryPath || '',
+      hasFaberModel: ttsEnv.piper.hasFaberModel,
+      modelsCount: ttsEnv.piper.models.length,
+    },
   };
 
   if (!tarPath) {
@@ -473,6 +486,34 @@ export async function runDoctor(passedConfig = null) {
       message: info.available ? info.path : `Binário "${toolName}" não localizado no sistema.`,
     });
   }
+
+  addCheck({
+    id: 'tts-pocket',
+    category: 'tts',
+    channel: 'system',
+    level: 'info',
+    title: ttsEnv.pocketTts.available
+      ? `Pocket TTS (Voz MrJ) disponível (${ttsEnv.pocketTts.voices.length} voz(es))`
+      : 'Pocket TTS (Voz MrJ) não configurado (opcional)',
+    message: ttsEnv.pocketTts.available
+      ? `${ttsEnv.pocketTts.dir} (${ttsEnv.pocketTts.voices.join(', ')})`
+      : 'Configure pocket-tts-local (.venv + voices/*.safetensors) para usar a voz do MrJ.',
+  });
+
+  addCheck({
+    id: 'tts-piper',
+    category: 'tts',
+    channel: 'system',
+    level: 'info',
+    title: ttsEnv.piper.available
+      ? `Piper ONNX (Voz Crom) disponível (${ttsEnv.piper.models.length} modelo(s))`
+      : ttsEnv.piper.binaryAvailable
+      ? 'Piper ONNX sem modelo baixado (use --baixar-piper)'
+      : 'Piper ONNX não instalado (opcional)',
+    message: ttsEnv.piper.binaryAvailable
+      ? `${ttsEnv.piper.binaryPath} | pt_BR-faber-medium: ${ttsEnv.piper.hasFaberModel ? 'OK' : 'ausente'}`
+      : 'Instale o binário piper e o modelo pt_BR-faber-medium.onnx.',
+  });
 
   // 8. Disk space (df -k)
   const firstWs = (config.channelOrder || [])

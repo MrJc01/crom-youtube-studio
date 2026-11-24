@@ -15,6 +15,7 @@ import {
 import { renderCurrentView, setView, syncBrowserUrl, updateHeaderChrome } from '../core/router.js';
 import { syncActiveTabFromState } from '../core/tabs.js';
 import { openKdenliveModal, openNewDocModal, openNewVersionModal } from '../core/modals.js';
+import { openScriptNarrationModal } from './narration.js';
 
 export async function loadVersionHistory(docPath, { force = false, skipRender = false } = {}) {
   if (!state.serverMode || !docPath) return null;
@@ -1126,17 +1127,19 @@ export function renderScriptsView(container) {
     const eco = chData.projectLinks?.[activeDoc.path] || {
       boards: [],
       recordings: [],
+      narrations: [],
       notes: [],
       curadoria: [],
       kdenlive: [],
     };
     const ecoRecordings = eco.recordings || [];
+    const ecoNarrations = eco.narrations || [];
     const ecoBoards = eco.boards || [];
     const ecoNotes = eco.notes || [];
     const ecoCuradoria = eco.curadoria || [];
     const ecoKdenlive = eco.kdenlive || [];
     const ecoTotalLinks =
-      ecoRecordings.length + ecoBoards.length + ecoNotes.length + ecoCuradoria.length + ecoKdenlive.length;
+      ecoRecordings.length + ecoNarrations.length + ecoBoards.length + ecoNotes.length + ecoCuradoria.length + ecoKdenlive.length;
 
     const ecosystemHtml = `
       <div class="insp-section" id="inspEcosystemCard">
@@ -1146,9 +1149,31 @@ export function renderScriptsView(container) {
         </div>
 
         <div style="display:flex; flex-direction:column; gap:6px;">
+          <button type="button" class="btn-sm insp-eco-cta" id="ecoNarrateScriptBtn">🔊 Narrar este roteiro</button>
           <button type="button" class="btn-sm insp-eco-cta" id="ecoRecordScriptBtn">🎙️ Gravar este roteiro</button>
           <button type="button" class="btn-sm" id="ecoBoardActionBtn" style="width:100%; justify-content:center;">${ecoBoards.length ? '✎ Abrir Quadro Vinculado' : '✎ Criar Quadro deste Roteiro'}</button>
         </div>
+
+        ${ecoNarrations.length
+          ? `<div class="insp-eco-group">
+              <div class="insp-eco-subhead"><span>🔊 Narrações</span><span>${ecoNarrations.length}</span></div>
+              <div class="insp-eco-list">
+                ${ecoNarrations
+                  .map(
+                    (nar) => `
+                      <div class="insp-eco-nar-card">
+                        <div style="display:flex; justify-content:space-between; gap:6px; align-items:center;">
+                          <span class="insp-eco-item-title">${MD.escapeHtml(nar.title || nar.id)}</span>
+                          <span class="insp-eco-item-meta">${MD.escapeHtml(nar.docVersion || 'principal')}</span>
+                        </div>
+                        <audio controls preload="none" src="/api/tts/media?channel=${encodeURIComponent(chData.key)}&path=${encodeURIComponent(nar.relPath)}" style="width:100%; height:28px; margin-top:4px;"></audio>
+                      </div>
+                    `
+                  )
+                  .join('')}
+              </div>
+            </div>`
+          : ''}
 
         ${ecoRecordings.length
           ? `<div class="insp-eco-group">
@@ -1615,6 +1640,14 @@ export function renderScriptsView(container) {
   }
 
   // v5: Bindings Ecossistema do Projeto
+  document.getElementById('ecoNarrateScriptBtn')?.addEventListener('click', () => {
+    openScriptNarrationModal({
+      docPath: activeDoc.path,
+      docTitle: currentMeta.titulo || activeDoc.meta?.titulo || activeDoc.filename,
+      defaultVersion: state.activeVersion || 'principal',
+    });
+  });
+
   document.getElementById('ecoRecordScriptBtn')?.addEventListener('click', () => {
     setView('recorder', null, { roteiroPath: activeDoc.path });
   });

@@ -10,6 +10,7 @@ import {
 } from '../lib/trash.mjs';
 import { upsertRestoredNote } from '../notes.mjs';
 import { slugify } from '../sync.mjs';
+import { upsertRestoredNarration } from '../tts.mjs';
 import {
   commitRevision,
   createVersion,
@@ -354,6 +355,7 @@ export async function handleDocsRoutes({
     const restored = await restoreFromTrash(workspaceReal, trashId, {
       onRestoreNote: (payload) => upsertRestoredNote(workspaceReal, payload),
       onRestorePlaylist: (payload) => upsertRestoredPlaylist(workspaceReal, payload),
+      onRestoreNarration: (meta, dest) => upsertRestoredNarration(workspaceReal, meta, dest),
     });
 
     const state = stateCache.refreshChannel(key, { flushDisk: true });

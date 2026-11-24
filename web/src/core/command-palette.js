@@ -72,6 +72,21 @@ export async function prefetchUnifiedSearchSources() {
     );
   }
 
+  if (state.narrationState.loadedChannel !== chKey && !state.narrationState.loading) {
+    tasks.push(
+      fetch(`/api/tts/audios?channel=${encodeURIComponent(chKey)}`, { cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((json) => {
+          if (json?.ok && state.activeChannel === chKey) {
+            state.narrationState.items = Array.isArray(json.items) ? json.items : [];
+            if (Array.isArray(json.categories)) state.narrationState.categories = json.categories;
+            state.narrationState.loadedChannel = chKey;
+          }
+        })
+        .catch(() => {})
+    );
+  }
+
   if (tasks.length) {
     await Promise.allSettled(tasks);
     const modal = document.getElementById('cmdModal');
@@ -236,6 +251,29 @@ function buildUnifiedGroups(query) {
       };
     });
 
+  // 7. Narrações & Áudios (TTS Local + Clonagem)
+  const narPool =
+    state.narrationState.loadedChannel === chData.key ? state.narrationState.items || [] : [];
+  const narrations = narPool
+    .filter((nar) => {
+      if (!q) return true;
+      return `${nar.title || ''} ${nar.voiceName || ''} ${nar.origin || ''} ${nar.category || ''} ${nar.docPath || ''}`
+        .toLowerCase()
+        .includes(q);
+    })
+    .slice(0, limitPerCat)
+    .map((nar) => ({
+      kind: 'narration',
+      badgeClass: 'is-recording',
+      badgeLabel: '🔊 Narração',
+      title: nar.title || nar.fileName,
+      sub: `${nar.origin} • ${nar.voiceName || nar.category}${nar.docPath ? ` • ${nar.docPath}` : ''}`,
+      onSelect: () => {
+        state.narrationState.filterSearch = nar.title || nar.fileName || '';
+        setView('narration');
+      },
+    }));
+
   return [
     { key: 'docs', label: '📄 Roteiros & Docs (.md)', items: docs },
     { key: 'boards', label: '◈ Quadros Excalidraw', items: boards },
@@ -243,6 +281,7 @@ function buildUnifiedGroups(query) {
     { key: 'playlists', label: '🎬 Playlists & Curadoria', items: playlists },
     { key: 'notes', label: '📝 Notas Keep', items: notes },
     { key: 'recordings', label: '🎙️ Sessões de Gravação', items: recordings },
+    { key: 'narrations', label: '🔊 Narrações & Áudios TTS', items: narrations },
   ].filter((g) => g.items.length > 0);
 }
 

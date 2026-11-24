@@ -50,6 +50,12 @@ if [[ "${1:-}" == "roteiro" ]]; then
   exec "$NODE_BIN" "$REPO_ROOT/src/roteiro-git.mjs" "$@"
 fi
 
+if [[ "${1:-}" == "narrar" ]]; then
+  shift
+  require_node
+  exec "$NODE_BIN" "$REPO_ROOT/src/tts-cli.mjs" "$@"
+fi
+
 if [[ "${1:-}" == "doctor" ]]; then
   shift
   require_node
@@ -100,6 +106,7 @@ Uso: crom-studio [opções]
      crom-studio doctor [--json] [--config <arquivo>]
      crom-studio backup [--canal mrj|crom|all] [--com-gravacoes] [--output caminho.tar.gz]
      crom-studio roteiro <subcomando> [opções]
+     crom-studio narrar [--canal mrj|crom] [--texto "..." | --arquivo <roteiro.md>] [opções]
 
 Opções:
   --tray            Inicia ou aciona o ícone na bandeja do sistema (padrão)

@@ -1167,13 +1167,47 @@ async function run() {
     // Confirma que Nota E2E Lixeira voltou para /mrj/notas
     await chrome.navigate(`${baseUrl}/mrj/notas`);
     await chrome.waitFor(`() => document.body.innerText.includes('Nota E2E Lixeira')`, 5000, 'restored note visible in /notas');
-    console.log('✔ [10/10] /mrj/configuracoes Card 5 (LAN/QR/PIN) + Card 6 (Doctor/Backup/Lixeira Restaurar)');
+    console.log('✔ [10/11] /mrj/configuracoes Card 5 (LAN/QR/PIN) + Card 6 (Doctor/Backup/Lixeira Restaurar)');
+
+    // 11. /mrj/narracao -> Estúdio de Vozes & Narrações + Biblioteca Unificada + Modal de Narração em Roteiros
+    await chrome.navigate(`${baseUrl}/mrj/narracao`);
+    await chrome.waitFor(`() => Boolean(document.querySelector('.nar-synth-card')) && Boolean(document.getElementById('narPresetSelect'))`, 6000, 'narration view loaded');
+
+    const presetsUi = await chrome.evaluate(`(() => {
+      const opts = Array.from(document.getElementById('narPresetSelect')?.options || []).map((o) => o.value);
+      document.getElementById('narPresetSelect').value = 'crom-j';
+      document.getElementById('narPresetSelect').dispatchEvent(new Event('change'));
+      return opts;
+    })()`);
+    assert.ok(presetsUi.includes('mrj-pocket'), 'Preset mrj-pocket deve existir no seletor');
+    assert.ok(presetsUi.includes('crom-j'), 'Preset crom-j deve existir no seletor');
+
+    await chrome.waitFor(
+      `() => (document.getElementById('valLengthScale')?.textContent || '').includes('1.50x') && (document.getElementById('valPitch')?.textContent || '').includes('0.90x')`,
+      4000,
+      'crom-j slider values rendered'
+    );
+
+    // Cria categoria personalizada pela UI e alterna abas
+    await chrome.click('[data-nar-tab="script"]');
+    await chrome.waitFor(`() => Boolean(document.getElementById('narDocSelect')) && Boolean(document.getElementById('narDocVersionSelect'))`, 4000, 'script narration tab loaded');
+    await chrome.click('#narLoadDocTextBtn');
+    await chrome.waitFor(`() => (document.getElementById('narTextInput')?.value || '').trim().length > 10`, 5000, 'script text cleaned and loaded');
+
+    // Abre Roteiros -> Ecossistema -> Botão "Narrar este roteiro" -> modal abre e pré-visualiza texto
+    await chrome.navigate(`${baseUrl}/mrj/roteiros/2026-11-roteiro-aurora`);
+    await chrome.waitFor(`() => Boolean(document.getElementById('ecoNarrateScriptBtn'))`, 5000, 'ecoNarrateScriptBtn visible');
+    await chrome.click('#ecoNarrateScriptBtn');
+    await chrome.waitFor(`() => !document.getElementById('narrateScriptModal')?.classList.contains('hidden') && (document.getElementById('narModalTextArea')?.value || '').includes('teleprompter')`, 5000, 'narrate script modal loaded clean text');
+    await chrome.click('[data-close-modal="narrateScriptModal"]');
+    await new Promise((r) => setTimeout(r, 200));
+    console.log('✔ [11/11] /mrj/narracao (Voz MrJ + Crom perfil j + De um Roteiro) + Modal Narrar em Roteiros');
 
     assert.deepEqual(chrome.consoleErrors, [], `Erros no console do navegador: ${chrome.consoleErrors.join(' | ')}`);
     assert.deepEqual(chrome.pageErrors, [], `Exceções de página no navegador: ${chrome.pageErrors.join(' | ')}`);
     assert.deepEqual(chrome.httpErrors, [], `Respostas HTTP >= 400: ${chrome.httpErrors.join(' | ')}`);
 
-    console.log('[E2E Browser] 10/10 fluxos aprovados com 0 console errors, 0 pageerrors e 0 HTTP >= 400.');
+    console.log('[E2E Browser] 11/11 fluxos aprovados com 0 console errors, 0 pageerrors e 0 HTTP >= 400.');
   } finally {
     await chrome.closeAll().catch(() => {});
     if (typeof server.closeAllConnections === 'function') {

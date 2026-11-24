@@ -10,7 +10,7 @@ import {
   withFileLock,
 } from './storage.mjs';
 
-export const TRASH_VALID_KINDS = new Set(['doc', 'board', 'note', 'playlist']);
+export const TRASH_VALID_KINDS = new Set(['doc', 'board', 'note', 'playlist', 'narration']);
 export const DEFAULT_TRASH_MAX_DAYS = 30;
 
 function httpError(message, statusCode) {
@@ -323,11 +323,13 @@ export async function restoreFromTrash(wsPath, trashId, handlers = {}) {
       throw httpError(`Payload do item "${cleanId}" não encontrado na lixeira`, 404);
     }
 
-    if (entry.kind === 'doc' || entry.kind === 'board') {
+    if (entry.kind === 'doc' || entry.kind === 'board' || entry.kind === 'narration') {
       let rawBuf = fs.readFileSync(payloadAbs);
       const fallbackRel =
         entry.kind === 'board'
           ? `quadros/${cleanId.toLowerCase()}.excalidraw`
+          : entry.kind === 'narration'
+          ? `narracoes/${cleanId}.wav`
           : `01-ideias/${cleanId}.md`;
       const dest = buildRestoredConflictPath(ctx.wsReal, entry.originalPath || fallbackRel, entry.kind);
 
@@ -347,6 +349,9 @@ export async function restoreFromTrash(wsPath, trashId, handlers = {}) {
       }
 
       writeFileAtomic(dest.absPath, rawBuf, { backup: false });
+      if (entry.kind === 'narration' && typeof handlers.onRestoreNarration === 'function') {
+        await handlers.onRestoreNarration(entry.metadata, dest);
+      }
       removePayloadFile(ctx, entry.payloadFile);
       manifest.items.splice(idx, 1);
       saveManifest(ctx, manifest);

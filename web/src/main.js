@@ -45,6 +45,7 @@ import './views/catalog.js';
 import './views/dashboard.js';
 import './views/ideas.js';
 import { renderMapView } from './views/map.js';
+import './views/narration.js';
 import './views/notes.js';
 import './views/pipeline.js';
 import './views/production.js';
