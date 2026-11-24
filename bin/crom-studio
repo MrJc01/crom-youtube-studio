@@ -30,13 +30,61 @@ SERVER_SCRIPT="$REPO_ROOT/src/server.mjs"
 SOCK_PATH="${CROM_STUDIO_TRAY_SOCK:-/tmp/crom-youtube-studio-tray.sock}"
 TRAY_LOG="/tmp/crom-youtube-studio-tray.log"
 
-if [[ "${1:-}" == "roteiro" ]]; then
-  shift
+require_node() {
   if [[ -z "$NODE_BIN" ]]; then
     echo "Erro: binário 'node' não encontrado no PATH." >&2
     exit 1
   fi
+}
+
+require_python() {
+  if [[ -z "$PYTHON_BIN" ]]; then
+    echo "Erro: binário 'python3' não encontrado no PATH." >&2
+    exit 1
+  fi
+}
+
+if [[ "${1:-}" == "roteiro" ]]; then
+  shift
+  require_node
   exec "$NODE_BIN" "$REPO_ROOT/src/roteiro-git.mjs" "$@"
+fi
+
+if [[ "${1:-}" == "doctor" ]]; then
+  shift
+  require_node
+  exec "$NODE_BIN" "$REPO_ROOT/src/lib/doctor.mjs" "$@"
+fi
+
+if [[ "${1:-}" == "backup" ]]; then
+  shift
+  require_node
+  export CROM_STUDIO_REPO_ROOT="$REPO_ROOT"
+  exec "$NODE_BIN" --input-type=module -e '
+    import path from "node:path";
+    import { pathToFileURL } from "node:url";
+    const root = process.env.CROM_STUDIO_REPO_ROOT;
+    const { loadConfig, getCliArg } = await import(pathToFileURL(path.join(root, "src/config.mjs")).href);
+    const { createBackupArchive } = await import(pathToFileURL(path.join(root, "src/lib/backup.mjs")).href);
+    const args = process.argv.slice(1);
+    const asJson = args.includes("--json");
+    const channel = getCliArg(args, "--canal") || getCliArg(args, "--channel") || "all";
+    const includeRecordings = args.includes("--com-gravacoes") || args.includes("--include-recordings");
+    const rawOut = getCliArg(args, "--output") || getCliArg(args, "-o");
+    const outputPath = rawOut ? path.resolve(process.cwd(), rawOut) : undefined;
+    const config = loadConfig(args);
+    const result = await createBackupArchive(config, {
+      channel,
+      includeRecordings,
+      ...(outputPath ? { outputPath } : {}),
+    });
+    if (asJson) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      const mb = (Number(result.size || 0) / (1024 * 1024)).toFixed(2);
+      console.log(`[Crom Studio Backup] OK -> ${result.archivePath} (${mb} MB, canais: ${(result.channels || []).join(", ")}, gravacoes: ${result.includeRecordings ? "sim" : "nao"})`);
+    }
+  ' -- "$@"
 fi
 
 MODE="tray"
@@ -48,6 +96,9 @@ CANAL=""
 usage() {
   cat <<'EOF'
 Uso: crom-studio [opções]
+     crom-studio serve [opções]
+     crom-studio doctor [--json] [--config <arquivo>]
+     crom-studio backup [--canal mrj|crom|all] [--com-gravacoes] [--output caminho.tar.gz]
      crom-studio roteiro <subcomando> [opções]
 
 Opções:
@@ -55,17 +106,27 @@ Opções:
   --open            Abre o Studio no navegador padrão
   --no-open         Não abre o navegador ao iniciar/acionar o tray
   --canal mrj|crom  Seleciona o canal alvo (mrj ou crom)
-  --server          Executa o servidor web Node em foreground
+  --server, serve   Executa o servidor web Node em foreground
   --sync            Sincroniza Markdown + caches locais (node src/sync.mjs)
   --sync-youtube    Sincroniza Markdown + YouTube RSS (node src/sync.mjs --youtube)
   --no-autostart    Inicia o tray sem ligar o servidor web automaticamente
   --check           Valida dependências GTK/Ayatana e arquivos do tray
   --status          Consulta o status da instância ativa do tray
   --quit            Encerra a instância ativa do tray e o servidor gerenciado
+  doctor            Executa diagnóstico de integridade (YAML, JSON, quarentena, ferramentas)
+  backup            Gera arquivo portátil .tar.gz dos workspaces
   roteiro ...       Git de roteiros e versões (log, commit, nova-versao, diff, restaurar, promover)
   -h, --help        Exibe esta ajuda
 EOF
 }
+
+if [[ "${1:-}" == "serve" ]]; then
+  MODE="server"
+  shift
+elif [[ "${1:-}" == "sync" ]]; then
+  MODE="sync"
+  shift
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -73,7 +134,7 @@ while [[ $# -gt 0 ]]; do
       MODE="tray"
       shift
       ;;
-    --server)
+    --server|serve)
       MODE="server"
       shift
       ;;
@@ -139,25 +200,24 @@ if [[ -n "$CANAL" && "$CANAL" != "mrj" && "$CANAL" != "crom" ]]; then
   exit 1
 fi
 
-require_node() {
-  if [[ -z "$NODE_BIN" ]]; then
-    echo "Erro: binário 'node' não encontrado no PATH." >&2
-    exit 1
-  fi
-}
-
-require_python() {
-  if [[ -z "$PYTHON_BIN" ]]; then
-    echo "Erro: binário 'python3' não encontrado no PATH." >&2
-    exit 1
-  fi
-}
-
 ensure_initial_sync() {
   if [[ ! -f "$REPO_ROOT/data/data.js" && -f "$SYNC_SCRIPT" ]]; then
     require_node
     echo "▶ Primeira execução: gerando data/data.js via sync.mjs..."
     "$NODE_BIN" "$SYNC_SCRIPT"
+  fi
+}
+
+ensure_builds() {
+  if [[ ! -f "$REPO_ROOT/web/vendor/excalidraw/bundle.js" && -f "$REPO_ROOT/scripts/build-whiteboard.mjs" ]]; then
+    require_node
+    echo "▶ Gerando bundle do Excalidraw (web/vendor/excalidraw/bundle.js)..."
+    "$NODE_BIN" "$REPO_ROOT/scripts/build-whiteboard.mjs"
+  fi
+  if [[ ( ! -f "$REPO_ROOT/web/dist/app.bundle.js" || ! -f "$REPO_ROOT/web/dist/styles.bundle.css" ) && -f "$REPO_ROOT/scripts/build-web.mjs" ]]; then
+    require_node
+    echo "▶ Gerando bundle web modular (web/dist/app.bundle.js)..."
+    "$NODE_BIN" "$REPO_ROOT/scripts/build-web.mjs"
   fi
 }
 
@@ -214,6 +274,7 @@ case "$MODE" in
     ;;
   server)
     require_node
+    ensure_builds
     ensure_initial_sync
     cd "$REPO_ROOT"
     if [[ "$DO_OPEN" -eq 1 && "$NO_OPEN" -eq 0 ]] && command -v xdg-open >/dev/null 2>&1; then
@@ -225,6 +286,7 @@ case "$MODE" in
     ;;
   tray)
     require_python
+    ensure_builds
     ensure_initial_sync
     TARGET_CANAL="${CANAL:-mrj}"
 

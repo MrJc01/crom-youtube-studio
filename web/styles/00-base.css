@@ -1,0 +1,205 @@
+:root {
+  --accent: #e12d78;
+  --accent-rgb: 225, 45, 120;
+  --accent-2: #5b4cf5;
+  --accent-2-rgb: 91, 76, 245;
+  --accent-3: #8f225c;
+  --accent-3-rgb: 143, 34, 92;
+
+  --bg-deep: #090a11;
+  --bg-shell: rgba(15, 16, 26, 0.82);
+  --bg-panel: rgba(20, 21, 34, 0.72);
+  --bg-card: rgba(255, 255, 255, 0.032);
+  --bg-card-hover: rgba(255, 255, 255, 0.056);
+  --bg-input: rgba(12, 13, 22, 0.85);
+
+  --border: rgba(255, 255, 255, 0.075);
+  --border-soft: rgba(255, 255, 255, 0.045);
+  --border-strong: rgba(255, 255, 255, 0.14);
+
+  --text-1: #f5f7fc;
+  --text-2: #9ea4b8;
+  --text-3: #646b82;
+
+  --ok: #36d399;
+  --warn: #f5b942;
+  --danger: #f45b69;
+  --info: #4cc9f0;
+
+  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  --radius-shell: 22px;
+  --radius-lg: 14px;
+  --radius-md: 10px;
+  --radius-sm: 7px;
+  --sidebar-w: 74px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg-deep);
+  color: var(--text-1);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+.hidden {
+  display: none !important;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(var(--accent-rgb), 0.55);
+}
+
+/* =========================================================
+   CAMADA AURORA DINÂMICA (Orbes Atmosféricas Suaves)
+========================================================= */
+.aurora-stage {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  background: radial-gradient(circle at 50% 40%, #151726 0%, #090a11 85%);
+}
+
+.aurora-orb {
+  position: absolute;
+  border-radius: 999px;
+  filter: blur(115px);
+  will-change: transform;
+  opacity: 0.34;
+}
+
+.orb-top-left {
+  width: 58vw;
+  height: 46vh;
+  top: -18vh;
+  left: 8vw;
+  background: radial-gradient(circle, rgba(var(--accent-2-rgb), 0.72) 0%, transparent 72%);
+  animation: orbDriftA 26s ease-in-out infinite alternate;
+}
+
+.orb-top-right {
+  width: 52vw;
+  height: 48vh;
+  top: -16vh;
+  right: -10vw;
+  background: radial-gradient(circle, rgba(var(--accent-rgb), 0.78) 0%, transparent 72%);
+  animation: orbDriftB 31s ease-in-out infinite alternate;
+}
+
+.orb-bottom-left {
+  width: 48vw;
+  height: 44vh;
+  bottom: -18vh;
+  left: -10vw;
+  background: radial-gradient(circle, rgba(var(--accent-3-rgb), 0.72) 0%, transparent 72%);
+  animation: orbDriftB 29s ease-in-out infinite alternate-reverse;
+}
+
+.orb-bottom-right {
+  width: 46vw;
+  height: 42vh;
+  bottom: -20vh;
+  right: -8vw;
+  background: radial-gradient(circle, rgba(var(--accent-rgb), 0.52) 0%, transparent 72%);
+  animation: orbDriftA 34s ease-in-out infinite alternate-reverse;
+}
+
+.aurora-noise {
+  position: absolute;
+  inset: 0;
+  opacity: 0.03;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.8) 0.5px, transparent 0.5px);
+  background-size: 24px 24px;
+}
+
+@keyframes orbDriftA {
+  0% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(4vw, 3vh, 0) scale(1.07); }
+  100% { transform: translate3d(-3vw, 5vh, 0) scale(0.95); }
+}
+
+@keyframes orbDriftB {
+  0% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(-4vw, 4vh, 0) scale(1.06); }
+  100% { transform: translate3d(3vw, -3vh, 0) scale(0.96); }
+}
+
+/* =========================================================
+   FRAME & SHELL PRINCIPAL
+========================================================= */
+.viewport-frame {
+  position: relative;
+  z-index: 1;
+  height: 100vh;
+  width: 100vw;
+  padding: 0;
+  display: flex;
+}
+
+.studio-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  border-radius: 0;
+  background:
+    radial-gradient(620px 360px at 88% 0%, rgba(var(--accent-rgb), 0.16), transparent 68%),
+    radial-gradient(640px 360px at 26% 0%, rgba(var(--accent-2-rgb), 0.14), transparent 70%),
+    radial-gradient(520px 320px at 0% 100%, rgba(var(--accent-3-rgb), 0.18), transparent 68%),
+    var(--bg-shell);
+  border: none;
+  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(28px);
+  box-shadow: none;
+  overflow: hidden;
+}
+

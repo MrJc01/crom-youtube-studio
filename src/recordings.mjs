@@ -3,7 +3,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { slugify } from './sync.mjs';
+import {
+  assertInsideRoot,
+  readJsonSafe,
+  writeJsonAtomic,
+  withFileLock,
+  slugify,
+} from './lib/storage.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -110,34 +116,8 @@ export function resolveFfprobePath(ffmpegPath = null) {
   return null;
 }
 
-function assertInsideRoot(rootReal, targetPath) {
-  if (targetPath !== rootReal && !targetPath.startsWith(rootReal + path.sep)) {
-    throw httpError('Acesso fora da pasta de gravações bloqueado', 403);
-  }
-}
-
-function assertNoSymlinkChain(rootReal, targetAbs) {
-  const rel = path.relative(rootReal, targetAbs);
-  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
-    throw httpError('Acesso fora da pasta de gravações bloqueado', 403);
-  }
-  let cur = rootReal;
-  for (const part of rel.split(path.sep)) {
-    cur = path.join(cur, part);
-    if (!fs.existsSync(cur)) break;
-    const st = fs.lstatSync(cur);
-    if (st.isSymbolicLink()) {
-      throw httpError('Symlinks não são permitidos na pasta de gravações', 403);
-    }
-  }
-  let probe = targetAbs;
-  while (!fs.existsSync(probe)) {
-    const parent = path.dirname(probe);
-    if (parent === probe) break;
-    probe = parent;
-  }
-  const realProbe = fs.realpathSync(probe);
-  assertInsideRoot(rootReal, realProbe);
+function getRecordingsQuarantineDir(wsReal) {
+  return path.join(wsReal, '.studio-data', 'quarantine');
 }
 
 function resolveRecordingsDir(wsPath, { ensureDir = false } = {}) {
@@ -211,11 +191,10 @@ function validateFileName(fileName) {
 function resolveSessionPath(wsPath, sessionId, { ensureDir = false, mustExist = false } = {}) {
   const cleanSession = validateSessionId(sessionId);
   const { wsReal, recDirReal, exists } = resolveRecordingsDir(wsPath, { ensureDir });
-  const sessionAbs = path.resolve(recDirReal, cleanSession);
-  assertInsideRoot(recDirReal, sessionAbs);
-  if (exists) {
-    assertNoSymlinkChain(recDirReal, sessionAbs);
-  }
+  const sessionAbs = assertInsideRoot(recDirReal, path.resolve(recDirReal, cleanSession), {
+    allowEqual: false,
+    message: 'Acesso fora da pasta de gravações bloqueado',
+  });
   if (mustExist && (!exists || !fs.existsSync(sessionAbs))) {
     throw httpError(`Sessão de gravação "${cleanSession}" não encontrada`, 404);
   }
@@ -225,34 +204,29 @@ function resolveSessionPath(wsPath, sessionId, { ensureDir = false, mustExist = 
 function resolveTakePath(wsPath, sessionId, takeId, { ensureDir = false, mustExist = false } = {}) {
   const cleanTake = validateTakeId(takeId);
   const sessionCtx = resolveSessionPath(wsPath, sessionId, { ensureDir, mustExist });
-  const takeAbs = path.resolve(sessionCtx.sessionAbs, cleanTake);
-  assertInsideRoot(sessionCtx.recDirReal, takeAbs);
-  if (fs.existsSync(sessionCtx.sessionAbs)) {
-    assertNoSymlinkChain(sessionCtx.recDirReal, takeAbs);
-  }
+  const takeAbs = assertInsideRoot(
+    sessionCtx.recDirReal,
+    path.resolve(sessionCtx.sessionAbs, cleanTake),
+    {
+      allowEqual: false,
+      message: 'Acesso fora da pasta de gravações bloqueado',
+    }
+  );
   if (mustExist && !fs.existsSync(takeAbs)) {
     throw httpError(`Take "${cleanTake}" não encontrado na sessão "${sessionCtx.sessionId}"`, 404);
   }
   return { ...sessionCtx, takeId: cleanTake, takeAbs };
 }
 
-function writeJsonAtomic(filePath, data) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
-  fs.writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
-  fs.renameSync(tmpPath, filePath);
-}
-
-function readTakeMeta(takeAbs) {
+function readTakeMeta(takeAbs, wsReal = null) {
   const metaPath = path.join(takeAbs, 'meta.json');
-  if (!fs.existsSync(metaPath)) return {};
-  try {
-    const st = fs.lstatSync(metaPath);
-    if (st.isSymbolicLink() || !st.isFile()) return {};
-    return JSON.parse(fs.readFileSync(metaPath, 'utf8')) || {};
-  } catch {
-    return {};
-  }
+  const resolvedWs = wsReal || path.dirname(path.dirname(path.dirname(takeAbs)));
+  const data = readJsonSafe(metaPath, {
+    defaultData: {},
+    schemaVersion: 1,
+    quarantineDir: getRecordingsQuarantineDir(resolvedWs),
+  });
+  return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
 }
 
 function inferTrackKind(fileName) {
@@ -273,7 +247,7 @@ function getMediaMimeType(fileName) {
 }
 
 function readTakeInfo(wsReal, sessionId, takeId, takeAbs) {
-  const meta = readTakeMeta(takeAbs);
+  const meta = readTakeMeta(takeAbs, wsReal);
   const takeStat = fs.statSync(takeAbs);
   const relDir = `${RECORDINGS_DIR_NAME}/${sessionId}/${takeId}`;
   const numMatch = /^take-(\d+)$/.exec(takeId);
@@ -391,7 +365,7 @@ export function listRecordings(wsPath) {
   };
 }
 
-export function createRecordingTake(wsPath, options = {}) {
+export async function createRecordingTake(wsPath, options = {}) {
   const rawTitle = String(options.title || '').trim();
   const rawSlug = String(options.slug || rawTitle || 'gravacao').trim();
   const safeSlug = slugify(rawSlug).slice(0, 64).replace(/-+$/, '') || 'gravacao';
@@ -407,58 +381,65 @@ export function createRecordingTake(wsPath, options = {}) {
   const { wsReal, sessionAbs } = resolveSessionPath(wsPath, sessionId, { ensureDir: true });
   fs.mkdirSync(sessionAbs, { recursive: true });
 
-  const existingEntries = fs.readdirSync(sessionAbs, { withFileTypes: true });
-  let maxNum = 0;
-  for (const entry of existingEntries) {
-    if (!entry.isDirectory()) continue;
-    const m = /^take-(\d+)$/.exec(entry.name);
-    if (m) {
-      const n = Number(m[1]);
-      if (n > maxNum) maxNum = n;
+  return withFileLock(path.join(sessionAbs, '.session.lock'), async () => {
+    const existingEntries = fs.readdirSync(sessionAbs, { withFileTypes: true });
+    let maxNum = 0;
+    for (const entry of existingEntries) {
+      if (!entry.isDirectory()) continue;
+      const m = /^take-(\d+)$/.exec(entry.name);
+      if (m) {
+        const n = Number(m[1]);
+        if (n > maxNum) maxNum = n;
+      }
     }
-  }
 
-  const nextNum = maxNum + 1;
-  const takeId = `take-${String(nextNum).padStart(2, '0')}`;
-  const takeAbs = path.join(sessionAbs, takeId);
-  assertInsideRoot(sessionAbs, takeAbs);
-  fs.mkdirSync(takeAbs, { recursive: true });
+    const nextNum = maxNum + 1;
+    const takeId = `take-${String(nextNum).padStart(2, '0')}`;
+    const takeAbs = assertInsideRoot(sessionAbs, path.join(sessionAbs, takeId), {
+      allowEqual: false,
+      message: 'Acesso fora da pasta de gravações bloqueado',
+    });
+    fs.mkdirSync(takeAbs, { recursive: true });
 
-  const nowIso = new Date().toISOString();
-  const sepIdx = sessionId.indexOf('_');
-  const sessionDate = sepIdx > 0 ? sessionId.slice(0, sepIdx) : dateStr;
-  const sessionSlug = sepIdx > 0 ? sessionId.slice(sepIdx + 1) : safeSlug;
+    const nowIso = new Date().toISOString();
+    const sepIdx = sessionId.indexOf('_');
+    const sessionDate = sepIdx > 0 ? sessionId.slice(0, sepIdx) : dateStr;
+    const sessionSlug = sepIdx > 0 ? sessionId.slice(sepIdx + 1) : safeSlug;
 
-  const meta = {
-    sessionId,
-    takeId,
-    number: nextNum,
-    date: sessionDate,
-    slug: sessionSlug,
-    title: rawTitle || formatSlugAsTitle(sessionSlug),
-    mode: String(options.mode || 'all').trim() || 'all',
-    scriptPath: String(options.scriptPath || '').trim(),
-    notes: String(options.notes || '').trim(),
-    createdAt: nowIso,
-    updatedAt: nowIso,
-  };
-
-  writeJsonAtomic(path.join(takeAbs, 'meta.json'), meta);
-  const take = readTakeInfo(wsReal, sessionId, takeId, takeAbs);
-
-  return {
-    sessionId,
-    takeId,
-    session: {
-      id: sessionId,
+    const meta = {
+      sessionId,
+      takeId,
+      number: nextNum,
       date: sessionDate,
       slug: sessionSlug,
-      title: meta.title,
-      dirPath: sessionAbs,
-      relDir: `${RECORDINGS_DIR_NAME}/${sessionId}`,
-    },
-    take,
-  };
+      title: rawTitle || formatSlugAsTitle(sessionSlug),
+      mode: String(options.mode || 'all').trim() || 'all',
+      scriptPath: String(options.scriptPath || '').trim(),
+      notes: String(options.notes || '').trim(),
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    const metaPath = path.join(takeAbs, 'meta.json');
+    await withFileLock(metaPath, async () => {
+      writeJsonAtomic(metaPath, meta, { schemaVersion: 1, backup: true });
+    });
+    const take = readTakeInfo(wsReal, sessionId, takeId, takeAbs);
+
+    return {
+      sessionId,
+      takeId,
+      session: {
+        id: sessionId,
+        date: sessionDate,
+        slug: sessionSlug,
+        title: meta.title,
+        dirPath: sessionAbs,
+        relDir: `${RECORDINGS_DIR_NAME}/${sessionId}`,
+      },
+      take,
+    };
+  });
 }
 
 export async function saveRecordingTrack(wsPath, { sessionId, takeId, kind, ext, req }) {
@@ -581,12 +562,18 @@ export async function saveRecordingTrack(wsPath, { sessionId, takeId, kind, ext,
   }
 
   const metaPath = path.join(takeAbs, 'meta.json');
-  const existingMeta = readTakeMeta(takeAbs);
-  writeJsonAtomic(metaPath, {
-    ...existingMeta,
-    sessionId,
-    takeId,
-    updatedAt: new Date().toISOString(),
+  await withFileLock(metaPath, async () => {
+    const existingMeta = readTakeMeta(takeAbs, wsReal);
+    writeJsonAtomic(
+      metaPath,
+      {
+        ...existingMeta,
+        sessionId,
+        takeId,
+        updatedAt: new Date().toISOString(),
+      },
+      { schemaVersion: 1, backup: true }
+    );
   });
 
   const take = readTakeInfo(wsReal, sessionId, takeId, takeAbs);
@@ -636,8 +623,10 @@ export async function convertTrackToMp4(wsPath, { sessionId, takeId, fileName })
     mustExist: true,
   });
 
-  const srcAbs = path.join(takeAbs, cleanFile);
-  assertInsideRoot(takeAbs, srcAbs);
+  const srcAbs = assertInsideRoot(takeAbs, path.join(takeAbs, cleanFile), {
+    allowEqual: false,
+    message: 'Acesso fora da pasta de gravações bloqueado',
+  });
   if (!fs.existsSync(srcAbs)) {
     throw httpError(`Arquivo "${cleanFile}" não encontrado no take.`, 404);
   }
@@ -690,12 +679,18 @@ export async function convertTrackToMp4(wsPath, { sessionId, takeId, fileName })
   }
 
   const metaPath = path.join(takeAbs, 'meta.json');
-  const existingMeta = readTakeMeta(takeAbs);
-  writeJsonAtomic(metaPath, {
-    ...existingMeta,
-    sessionId,
-    takeId,
-    updatedAt: new Date().toISOString(),
+  await withFileLock(metaPath, async () => {
+    const existingMeta = readTakeMeta(takeAbs, wsReal);
+    writeJsonAtomic(
+      metaPath,
+      {
+        ...existingMeta,
+        sessionId,
+        takeId,
+        updatedAt: new Date().toISOString(),
+      },
+      { schemaVersion: 1, backup: true }
+    );
   });
 
   const take = readTakeInfo(wsReal, sessionId, takeId, takeAbs);
@@ -760,12 +755,14 @@ export function streamRecordingMedia(wsPath, relPath, req, res) {
     throw httpError('Segmento de caminho proibido', 403);
   }
 
-  const abs = normalized.startsWith(`${RECORDINGS_DIR_NAME}/`)
+  const rawAbs = normalized.startsWith(`${RECORDINGS_DIR_NAME}/`)
     ? path.resolve(wsReal, normalized)
     : path.resolve(recDirReal, normalized);
 
-  assertInsideRoot(recDirReal, abs);
-  assertNoSymlinkChain(recDirReal, abs);
+  const abs = assertInsideRoot(recDirReal, rawAbs, {
+    allowEqual: false,
+    message: 'Acesso fora da pasta de gravações bloqueado',
+  });
 
   if (!fs.existsSync(abs)) {
     throw httpError('Arquivo de gravação não encontrado', 404);
@@ -776,8 +773,10 @@ export function streamRecordingMedia(wsPath, relPath, req, res) {
     throw httpError('Acesso negado ao arquivo de mídia', 403);
   }
 
-  const realAbs = fs.realpathSync(abs);
-  assertInsideRoot(recDirReal, realAbs);
+  const realAbs = assertInsideRoot(recDirReal, fs.realpathSync(abs), {
+    allowEqual: false,
+    message: 'Acesso fora da pasta de gravações bloqueado',
+  });
 
   const totalSize = st.size;
   const contentType = getMediaMimeType(path.basename(realAbs));

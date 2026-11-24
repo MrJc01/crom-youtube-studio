@@ -13,7 +13,14 @@
     "start": "node src/server.mjs",
     "roteiro": "node src/roteiro-git.mjs",
     "build:whiteboard": "node scripts/build-whiteboard.mjs",
-    "postinstall": "node scripts/build-whiteboard.mjs"
+    "build:web": "node scripts/build-web.mjs",
+    "build": "npm run build:whiteboard && npm run build:web",
+    "postinstall": "npm run build",
+    "doctor": "bash bin/crom-studio doctor",
+    "backup": "bash bin/crom-studio backup",
+    "test": "node --test tests/*.test.mjs",
+    "test:e2e": "node tests/e2e-browser.mjs",
+    "test:all": "npm test && npm run test:e2e"
   },
   "engines": {
     "node": ">=20.0.0"

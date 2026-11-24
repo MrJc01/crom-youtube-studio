@@ -2,12 +2,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DATA_DIR, WEB_DIR, loadConfig, getCliArg } from './config.mjs';
+import { readJsonSafe, writeFileAtomic, writeJsonAtomic, slugify } from './lib/storage.mjs';
+import { listTrash } from './lib/trash.mjs';
 import { getVersioningSummary } from './versioning.mjs';
 import { listBoards } from './boards.mjs';
 import { fetchChannelAllVideos } from './youtube-scraper.mjs';
 import { loadCuradoria } from './catalog-curadoria.mjs';
+import { listRecordings } from './recordings.mjs';
 
-const IGNORED_DIRS = new Set(['studio', '.git', 'node_modules', 'gravacoes']);
+export { slugify };
+
+const IGNORED_DIRS = new Set(['studio', '.git', 'node_modules', 'gravacoes', 'quadros']);
 
 const STATUS_ORDER = [
   'ideia',
@@ -29,16 +34,7 @@ const SERIES_FOLDER_MAP = {
   crom: 'Crom',
 };
 
-export function slugify(text) {
-  return (
-    String(text || '')
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '') || 'sem-titulo'
-  );
-}
+// slugify is imported & re-exported from ./lib/storage.mjs
 
 function unquote(str) {
   if (str.length >= 2) {
@@ -283,36 +279,72 @@ function walkMarkdownFiles(dir, relBase = '') {
   return results;
 }
 
-function getYoutubeCachePath(channelKey) {
+function getLegacyYoutubeCachePath(channelKey) {
   return path.join(DATA_DIR, `${channelKey}-youtube-cache.json`);
 }
 
-function loadYouTubeCache(channelKey, channelCfg) {
-  const cachePath = getYoutubeCachePath(channelKey);
-  if (fs.existsSync(cachePath)) {
-    try {
-      return JSON.parse(fs.readFileSync(cachePath, 'utf8'));
-    } catch {
-      return { channel: {}, videos: [], githubRepos: [] };
-    }
-  }
-
-  // Fallback de leitura único caso ainda exista cache legado no workspace
-  if (channelCfg?.workspacePath) {
-    const legacyPath = path.join(channelCfg.workspacePath, 'studio', 'youtube-cache.json');
-    if (fs.existsSync(legacyPath) && !fs.lstatSync(legacyPath).isSymbolicLink()) {
-      try {
-        return JSON.parse(fs.readFileSync(legacyPath, 'utf8'));
-      } catch {
-        // segue para fallback vazio
-      }
-    }
-  }
-
-  return { channel: {}, videos: [], githubRepos: [] };
+export function getWorkspaceYoutubeCachePath(workspacePath) {
+  return path.join(workspacePath, '.studio-data', 'youtube-cache.json');
 }
 
-function readJsonSafe(filePath) {
+function getWorkspaceQuarantineDir(workspacePath) {
+  return path.join(workspacePath, '.studio-data', 'quarantine');
+}
+
+export function loadYouTubeCache(channelKey, channelCfg) {
+  const emptyFallback = { channel: {}, videos: [], githubRepos: [] };
+  const wsPath = channelCfg?.workspacePath;
+
+  if (wsPath && fs.existsSync(wsPath)) {
+    const wsCachePath = getWorkspaceYoutubeCachePath(wsPath);
+    const quarantineDir = getWorkspaceQuarantineDir(wsPath);
+
+    if (fs.existsSync(wsCachePath)) {
+      const parsed = readJsonSafe(wsCachePath, {
+        defaultData: emptyFallback,
+        schemaVersion: 1,
+        quarantineDir,
+      });
+      return parsed && typeof parsed === 'object' ? parsed : emptyFallback;
+    }
+
+    // Fallback de migração única: data/<key>-youtube-cache.json -> <wsPath>/.studio-data/youtube-cache.json
+    const migrationCandidates = [
+      getLegacyYoutubeCachePath(channelKey),
+      path.join(wsPath, 'studio', 'youtube-cache.json'),
+    ];
+    for (const candidate of migrationCandidates) {
+      if (!candidate || !fs.existsSync(candidate)) continue;
+      try {
+        if (fs.lstatSync(candidate).isSymbolicLink()) continue;
+        const raw = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+        if (raw && typeof raw === 'object') {
+          writeJsonAtomic(wsCachePath, raw, { schemaVersion: 1, backup: true });
+          return raw;
+        }
+      } catch {
+        // segue para próximo candidato
+      }
+    }
+
+    return emptyFallback;
+  }
+
+  const legacyPath = getLegacyYoutubeCachePath(channelKey);
+  if (fs.existsSync(legacyPath)) {
+    return (
+      readJsonSafe(legacyPath, {
+        defaultData: emptyFallback,
+        schemaVersion: 1,
+        quarantineDir: path.join(DATA_DIR, 'quarantine'),
+      }) || emptyFallback
+    );
+  }
+
+  return emptyFallback;
+}
+
+function readKdenliveJson(filePath) {
   if (!filePath || !fs.existsSync(filePath)) return null;
   try {
     if (fs.lstatSync(filePath).isSymbolicLink()) return null;
@@ -322,44 +354,206 @@ function readJsonSafe(filePath) {
   }
 }
 
-function countWorkspaceNotes(workspacePath) {
-  if (!workspacePath) return 0;
+function loadWorkspaceNotesList(workspacePath) {
+  if (!workspacePath || !fs.existsSync(workspacePath)) return [];
   const notesPath = path.join(workspacePath, '.studio-data', 'notas.json');
-  const data = readJsonSafe(notesPath);
-  return Array.isArray(data?.notes) ? data.notes.length : 0;
+  if (!fs.existsSync(notesPath)) return [];
+  const data = readJsonSafe(notesPath, {
+    defaultData: { notes: [] },
+    schemaVersion: 1,
+    quarantineDir: getWorkspaceQuarantineDir(workspacePath),
+  });
+  return Array.isArray(data?.notes) ? data.notes : [];
 }
 
-function countWorkspaceRecordings(workspacePath) {
-  if (!workspacePath) return 0;
-  const recDir = path.join(workspacePath, 'gravacoes');
-  if (!fs.existsSync(recDir)) return 0;
+function countQuarantineFiles(workspacePath) {
+  if (!workspacePath || !fs.existsSync(workspacePath)) return 0;
+  const qDir = getWorkspaceQuarantineDir(workspacePath);
+  if (!fs.existsSync(qDir)) return 0;
   try {
-    const rootStat = fs.lstatSync(recDir);
-    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return 0;
-    const sessions = fs.readdirSync(recDir, { withFileTypes: true });
-    let count = 0;
-    for (const session of sessions) {
-      if (session.isSymbolicLink() || !session.isDirectory()) continue;
-      if (session.name.startsWith('.')) continue;
-      const sessionDir = path.join(recDir, session.name);
-      const entries = fs.readdirSync(sessionDir, { withFileTypes: true });
-      let sessionTakes = 0;
-      for (const entry of entries) {
-        if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
-        if (entry.name.startsWith('.')) continue;
-        if (/^take-/i.test(entry.name)) {
-          sessionTakes += 1;
-        }
-      }
-      if (sessionTakes === 0 && fs.existsSync(path.join(sessionDir, 'meta.json'))) {
-        sessionTakes = 1;
-      }
-      count += sessionTakes;
-    }
-    return count;
+    const st = fs.lstatSync(qDir);
+    if (st.isSymbolicLink() || !st.isDirectory()) return 0;
+    return fs
+      .readdirSync(qDir, { withFileTypes: true })
+      .filter((e) => e.isFile() && !e.isSymbolicLink() && !e.name.startsWith('.')).length;
   } catch {
     return 0;
   }
+}
+
+function computeProjectLinks({
+  channelKey,
+  channelCfg,
+  docs,
+  videos,
+  boards,
+  recordingsRes,
+  notesList,
+  curadoria,
+  kdenliveSummary,
+}) {
+  const links = {};
+  const ensure = (docPath) => {
+    const clean = String(docPath || '').trim();
+    if (!clean) return null;
+    if (!links[clean]) {
+      links[clean] = {
+        boards: [],
+        recordings: [],
+        notes: [],
+        curadoria: [],
+        kdenlive: [],
+      };
+    }
+    return links[clean];
+  };
+
+  for (const board of boards || []) {
+    for (const dp of board.linkedDocPaths || []) {
+      const entry = ensure(dp);
+      if (entry) {
+        entry.boards.push({
+          id: board.id,
+          title: board.title || board.id,
+          preferredMode: board.preferredMode || 'excalidraw',
+        });
+      }
+    }
+  }
+
+  for (const session of recordingsRes?.sessions || []) {
+    for (const take of session.takes || []) {
+      if (!take.scriptPath) continue;
+      const entry = ensure(take.scriptPath);
+      if (entry) {
+        entry.recordings.push({
+          sessionId: session.id,
+          takeId: take.id,
+          title: take.title || session.title || session.id,
+          date: session.date || '',
+          tracksCount: Array.isArray(take.tracks) ? take.tracks.length : 0,
+        });
+      }
+    }
+  }
+
+  for (const note of notesList || []) {
+    if (!note || !note.linkedDocPath) continue;
+    const entry = ensure(note.linkedDocPath);
+    if (entry) {
+      entry.notes.push({
+        id: note.id,
+        title: note.title || '',
+        color: note.color || 'default',
+      });
+    }
+  }
+
+  const videosById = new Map();
+  for (const v of videos || []) {
+    const vid = String(v.videoId || v.id || '').trim();
+    if (vid) videosById.set(vid, v);
+  }
+  const playlistItemsById = new Map();
+  const seenCuradoriaByDoc = new Map();
+
+  const pushCuradoriaLink = (docPath, itemObj) => {
+    const entry = ensure(docPath);
+    if (!entry) return;
+    let seen = seenCuradoriaByDoc.get(docPath);
+    if (!seen) {
+      seen = new Set();
+      seenCuradoriaByDoc.set(docPath, seen);
+    }
+    const dedupeKey = `${itemObj.videoId}:${itemObj.source}:${itemObj.playlistTitle || ''}`;
+    if (seen.has(dedupeKey)) return;
+    seen.add(dedupeKey);
+    entry.curadoria.push(itemObj);
+  };
+
+  for (const pl of curadoria?.playlists || []) {
+    for (const it of pl.items || []) {
+      const vid = String(it.videoId || it.id || '').trim();
+      if (vid && !playlistItemsById.has(vid)) {
+        playlistItemsById.set(vid, it);
+      }
+      if (it.linkedDocPath) {
+        pushCuradoriaLink(it.linkedDocPath, {
+          videoId: vid,
+          title: it.title || '',
+          url: it.url || (vid ? `https://www.youtube.com/watch?v=${vid}` : ''),
+          source: 'playlist',
+          playlistTitle: pl.title || '',
+        });
+      }
+    }
+  }
+
+  for (const [vid, vm] of Object.entries(curadoria?.videoMeta || {})) {
+    if (!vm || !vm.linkedDocPath) continue;
+    const info = videosById.get(vid) || playlistItemsById.get(vid);
+    pushCuradoriaLink(vm.linkedDocPath, {
+      videoId: vid,
+      title: info?.title || '',
+      url: info?.url || `https://www.youtube.com/watch?v=${vid}`,
+      source: 'videoMeta',
+      playlistTitle: '',
+    });
+  }
+
+  const kdVideos =
+    channelKey === 'mrj' || channelCfg?.kdenliveFolder === 'videos/mrj'
+      ? kdenliveSummary?.videosMrj || []
+      : kdenliveSummary?.videosCrom || [];
+
+  for (const doc of docs || []) {
+    const ytId = String(doc.meta?.youtube_id || '').trim();
+    if (ytId) {
+      const v = videosById.get(ytId) || playlistItemsById.get(ytId);
+      const existingList = links[doc.path]?.curadoria || [];
+      if (v && !existingList.some((x) => x.videoId === ytId)) {
+        pushCuradoriaLink(doc.path, {
+          videoId: ytId,
+          title: v.title || '',
+          url: v.url || `https://www.youtube.com/watch?v=${ytId}`,
+          source: 'youtube',
+          playlistTitle: '',
+        });
+      }
+    }
+
+    if (kdVideos.length > 0) {
+      const stem = path.basename(doc.path, '.md').toLowerCase();
+      const stemNoDate = stem.replace(/^\d{4}-\d{2}-/, '');
+      const docIdSlug = slugify(doc.meta?.id || '');
+      for (const kv of kdVideos) {
+        const kvSlug = String(kv.slug || '').toLowerCase();
+        if (!kvSlug) continue;
+        const matched =
+          kvSlug === stem ||
+          kvSlug === stemNoDate ||
+          kvSlug === docIdSlug ||
+          (ytId && String(kv.youtubeUrl || '').includes(ytId)) ||
+          String(doc.raw || '').includes(`/${kvSlug}`);
+        if (matched) {
+          const entry = ensure(doc.path);
+          if (entry && !entry.kdenlive.some((k) => k.slug === kv.slug)) {
+            entry.kdenlive.push({
+              slug: kv.slug,
+              title: kv.title || kv.slug,
+              serie: kv.serie || '',
+              youtubeUrl: kv.youtubeUrl || '',
+              hasProgress: Boolean(kv.hasProgress),
+              hasRender: Boolean(kv.hasRender),
+              path: kv.path || '',
+            });
+          }
+        }
+      }
+    }
+  }
+
+  return links;
 }
 
 function listKdenliveVideoFolders(dirPath, defaultCanal) {
@@ -380,8 +574,8 @@ function listKdenliveVideoFolders(dirPath, defaultCanal) {
     if (defaultCanal === 'crom' && entry.name === 'mrj') continue;
 
     const folderPath = path.join(dirPath, entry.name);
-    const canalMeta = readJsonSafe(path.join(folderPath, 'canal_meta.json'));
-    const pubJson = readJsonSafe(path.join(folderPath, 'publicacao.json'));
+    const canalMeta = readKdenliveJson(path.join(folderPath, 'canal_meta.json'));
+    const pubJson = readKdenliveJson(path.join(folderPath, 'publicacao.json'));
     const hasProgress = fs.existsSync(path.join(folderPath, 'PROGRESSO.md'));
     const renderDir = path.join(folderPath, 'render');
     let hasRender = false;
@@ -464,8 +658,8 @@ export function loadKdenliveSummary(kdenliveRoot) {
     };
   }
 
-  const canais = readJsonSafe(path.join(kdenliveRoot, 'canais.json'));
-  const canalJson = readJsonSafe(path.join(kdenliveRoot, 'canal.json')) || {};
+  const canais = readKdenliveJson(path.join(kdenliveRoot, 'canais.json'));
+  const canalJson = readKdenliveJson(path.join(kdenliveRoot, 'canal.json')) || {};
   const estilos = readKdenliveEstilos(path.join(kdenliveRoot, 'estilos'));
   const videosCrom = listKdenliveVideoFolders(path.join(kdenliveRoot, 'videos'), 'crom');
   const videosMrj = listKdenliveVideoFolders(path.join(kdenliveRoot, 'videos', 'mrj'), 'mrj');
@@ -484,8 +678,20 @@ export function loadKdenliveSummary(kdenliveRoot) {
   };
 }
 
-function indexChannel(channelKey, channelCfg) {
-  const files = walkMarkdownFiles(channelCfg.workspacePath);
+export function buildChannelState(ch, config = null, kdenliveSummary = null) {
+  const channelCfg = typeof ch === 'string' ? config?.channels?.[ch] : ch;
+  const channelKey = channelCfg?.key || (typeof ch === 'string' ? ch : '');
+  if (!channelCfg) {
+    throw Object.assign(new Error(`Canal inválido para buildChannelState: ${String(ch || '')}`), {
+      statusCode: 400,
+    });
+  }
+  const effectiveKdenlive =
+    kdenliveSummary || (config?.kdenliveRoot ? loadKdenliveSummary(config.kdenliveRoot) : null);
+
+  const wsPath = channelCfg.workspacePath;
+  const workspaceExists = Boolean(wsPath && fs.existsSync(wsPath));
+  const files = walkMarkdownFiles(wsPath);
   const docs = files.map(({ fullPath, relPath }) => {
     const raw = fs.readFileSync(fullPath, 'utf8');
     const stat = fs.statSync(fullPath);
@@ -635,16 +841,56 @@ function indexChannel(channelKey, channelCfg) {
     kdenliveFolder: channelCfg.kdenliveFolder || 'videos',
   };
 
-  const boards = listBoards(channelCfg.workspacePath);
-  const curadoria = loadCuradoria(channelCfg.workspacePath);
-  const notesCount = countWorkspaceNotes(channelCfg.workspacePath);
-  const recordingsCount = countWorkspaceRecordings(channelCfg.workspacePath);
+  const boards = listBoards(wsPath);
+  const curadoria = loadCuradoria(wsPath);
+  const notesList = loadWorkspaceNotesList(wsPath);
+  const notesCount = notesList.length;
+
+  let recordingsRes = { sessions: [] };
+  if (workspaceExists) {
+    try {
+      recordingsRes = listRecordings(wsPath);
+    } catch {
+      recordingsRes = { sessions: [] };
+    }
+  }
+  const recordingsCount = (recordingsRes.sessions || []).reduce(
+    (sum, s) => sum + (Array.isArray(s.takes) ? s.takes.length : 0),
+    0
+  );
+
+  const quarantineCount = workspaceExists ? countQuarantineFiles(wsPath) : 0;
+  let trashCount = 0;
+  if (workspaceExists) {
+    try {
+      trashCount = listTrash(wsPath).items.length;
+    } catch {
+      trashCount = 0;
+    }
+  }
+
+  const projectLinks = computeProjectLinks({
+    channelKey,
+    channelCfg,
+    docs,
+    videos,
+    boards,
+    recordingsRes,
+    notesList,
+    curadoria,
+    kdenliveSummary: effectiveKdenlive,
+  });
+
+  const health = {
+    quarantineCount,
+    trashCount,
+  };
 
   return {
     key: channelKey,
     workspaceName: `${mergedChannel.name} Studio`,
-    workspacePath: channelCfg.workspacePath,
-    workspaceExists: Boolean(channelCfg.workspacePath && fs.existsSync(channelCfg.workspacePath)),
+    workspacePath: wsPath,
+    workspaceExists,
     channel: mergedChannel,
     videos,
     githubRepos: Array.isArray(ytCache.githubRepos) ? ytCache.githubRepos : [],
@@ -655,6 +901,8 @@ function indexChannel(channelKey, channelCfg) {
     curadoria,
     notesCount,
     recordingsCount,
+    projectLinks,
+    health,
     stats: {
       docsCount: docs.length,
       videosCount: videos.length,
@@ -665,19 +913,47 @@ function indexChannel(channelKey, channelCfg) {
       boardsCount: boards.length,
       notesCount,
       recordingsCount,
+      quarantineCount,
+      trashCount,
     },
   };
 }
 
-export function syncWorkspace({ serverMode = false, config: passedConfig = null } = {}) {
+export function writeDiskBundles(payload, { dataDir = DATA_DIR, webDir = WEB_DIR } = {}) {
+  const resolvedDataDir = dataDir || DATA_DIR;
+  const resolvedWebDir = webDir || WEB_DIR;
+  fs.mkdirSync(resolvedDataDir, { recursive: true });
+  fs.mkdirSync(resolvedWebDir, { recursive: true });
+
+  const dataJsonPath = path.join(resolvedDataDir, 'data.json');
+  const dataJsPath = path.join(resolvedDataDir, 'data.js');
+  const webDataJsPath = path.join(resolvedWebDir, 'data.js');
+
+  const jsBundle = `/* Gerado automaticamente por src/sync.mjs — não editar manualmente */\nwindow.CROM_STUDIO_DATA = ${JSON.stringify(payload)};\nwindow.MRJ_STUDIO_DATA = window.CROM_STUDIO_DATA;\n`;
+
+  writeFileAtomic(dataJsonPath, JSON.stringify(payload, null, 2) + '\n', {
+    encoding: 'utf8',
+    backup: false,
+  });
+  writeFileAtomic(dataJsPath, jsBundle, { encoding: 'utf8', backup: false });
+  writeFileAtomic(webDataJsPath, jsBundle, { encoding: 'utf8', backup: false });
+}
+
+export function syncWorkspace({
+  serverMode = false,
+  config: passedConfig = null,
+  writeDisk = true,
+  dataDir = DATA_DIR,
+  webDir = WEB_DIR,
+} = {}) {
   const config = passedConfig || loadConfig();
+  const kdenlive = loadKdenliveSummary(config.kdenliveRoot);
   const channelsPayload = {};
 
   for (const key of config.channelOrder) {
-    channelsPayload[key] = indexChannel(key, config.channels[key]);
+    channelsPayload[key] = buildChannelState(config.channels[key], config, kdenlive);
   }
 
-  const kdenlive = loadKdenliveSummary(config.kdenliveRoot);
   const payload = {
     version: 2,
     generatedAt: new Date().toISOString(),
@@ -695,18 +971,12 @@ export function syncWorkspace({ serverMode = false, config: passedConfig = null 
     kdenlive,
   };
 
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.mkdirSync(WEB_DIR, { recursive: true });
-
-  const dataJsonPath = path.join(DATA_DIR, 'data.json');
-  const dataJsPath = path.join(DATA_DIR, 'data.js');
-  const webDataJsPath = path.join(WEB_DIR, 'data.js');
-
-  const jsBundle = `/* Gerado automaticamente por src/sync.mjs — não editar manualmente */\nwindow.CROM_STUDIO_DATA = ${JSON.stringify(payload)};\nwindow.MRJ_STUDIO_DATA = window.CROM_STUDIO_DATA;\n`;
-
-  fs.writeFileSync(dataJsonPath, JSON.stringify(payload, null, 2), 'utf8');
-  fs.writeFileSync(dataJsPath, jsBundle, 'utf8');
-  fs.writeFileSync(webDataJsPath, jsBundle, 'utf8');
+  if (writeDisk !== false && !config?.disableDiskBundles) {
+    writeDiskBundles(payload, {
+      dataDir: config?.dataDir || dataDir,
+      webDir: config?.webDir || webDir,
+    });
+  }
 
   return payload;
 }
@@ -844,7 +1114,7 @@ function updateCatalogMarkdown(cache, channelCfg, channelKey) {
     '\n' +
     content.slice(endIdx);
 
-  fs.writeFileSync(catalogPath, updated, 'utf8');
+  writeFileAtomic(catalogPath, updated, { encoding: 'utf8', backup: false });
 }
 
 async function syncChannelRss(channelKey, channelCfg) {
@@ -957,8 +1227,12 @@ async function syncChannelRss(channelKey, channelCfg) {
       lastSyncedAt,
     };
 
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(getYoutubeCachePath(channelKey), JSON.stringify(cache, null, 2), 'utf8');
+    const wsPath = channelCfg?.workspacePath;
+    if (wsPath && fs.existsSync(wsPath)) {
+      writeJsonAtomic(getWorkspaceYoutubeCachePath(wsPath), cache, { schemaVersion: 1, backup: true });
+    } else {
+      writeJsonAtomic(getLegacyYoutubeCachePath(channelKey), cache, { schemaVersion: 1, backup: true });
+    }
     updateCatalogMarkdown(cache, channelCfg, channelKey);
   } catch (err) {
     warning = `Não foi possível acessar o catálogo YouTube de ${channelKey} agora (${err.message}); mantendo cache local.`;
@@ -981,6 +1255,7 @@ export async function syncYouTubeRss({
   serverMode = false,
   channel = 'all',
   config: passedConfig = null,
+  writeDisk = true,
 } = {}) {
   const config = passedConfig || loadConfig();
   const targetKeys =
@@ -999,7 +1274,7 @@ export async function syncYouTubeRss({
     results.push(await syncChannelRss(key, config.channels[key]));
   }
 
-  const state = syncWorkspace({ serverMode, config });
+  const state = syncWorkspace({ serverMode, config, writeDisk });
   const warnings = results.map((r) => r.warning).filter(Boolean);
   const updatedCount = results.reduce((sum, r) => sum + r.updatedCount, 0);
 

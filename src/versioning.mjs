@@ -1,6 +1,12 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  assertInsideRoot,
+  readJsonSafe,
+  writeFileAtomic,
+  writeJsonAtomic,
+} from './lib/storage.mjs';
 
 export const GIT_DIR_NAME = '.roteiro-git';
 
@@ -57,20 +63,20 @@ export function getDocGitDir(workspaceRoot, relPath) {
   const rootReal = fs.realpathSync(workspaceRoot);
   const docKey = getDocKey(relPath);
   const baseGit = path.join(rootReal, GIT_DIR_NAME);
-  const docDir = path.resolve(baseGit, docKey);
-  if (!docDir.startsWith(baseGit + path.sep)) {
-    throw Object.assign(new Error('Diretório de histórico inválido'), { statusCode: 403 });
-  }
+  const docDir = assertInsideRoot(baseGit, path.resolve(baseGit, docKey), {
+    allowEqual: false,
+    message: 'Diretório de histórico inválido',
+  });
   return { rootReal, docKey, baseGit, docDir };
 }
 
 function getMainMdAbs(workspaceRoot, relPath) {
   const rootReal = fs.realpathSync(workspaceRoot);
   const norm = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '').trim();
-  const abs = path.resolve(rootReal, norm);
-  if (!abs.startsWith(rootReal + path.sep)) {
-    throw Object.assign(new Error('Caminho fora do workspace'), { statusCode: 403 });
-  }
+  const abs = assertInsideRoot(rootReal, path.resolve(rootReal, norm), {
+    allowEqual: false,
+    message: 'Caminho fora do workspace',
+  });
   return { rootReal, norm, abs };
 }
 
@@ -93,22 +99,37 @@ function formatRevId(num) {
   return `r${String(num).padStart(3, '0')}`;
 }
 
+function getQuarantineDirFromDocDir(docDir) {
+  const wsReal = path.dirname(path.dirname(docDir));
+  return path.join(wsReal, '.studio-data', 'quarantine');
+}
+
 function readIndex(docDir) {
   const idxPath = path.join(docDir, 'index.json');
   if (!fs.existsSync(idxPath)) return null;
-  return JSON.parse(fs.readFileSync(idxPath, 'utf8'));
+  return readJsonSafe(idxPath, {
+    defaultData: null,
+    schemaVersion: 1,
+    quarantineDir: getQuarantineDirFromDocDir(docDir),
+  });
 }
 
 function writeIndex(docDir, index) {
   fs.mkdirSync(path.join(docDir, 'revisoes'), { recursive: true });
   fs.mkdirSync(path.join(docDir, 'versoes'), { recursive: true });
-  fs.writeFileSync(path.join(docDir, 'index.json'), JSON.stringify(index, null, 2) + '\n', 'utf8');
+  writeJsonAtomic(path.join(docDir, 'index.json'), index, {
+    schemaVersion: 1,
+    backup: true,
+  });
 }
 
 function writeRevSnapshot(docDir, revId, content) {
   const revDir = path.join(docDir, 'revisoes');
   fs.mkdirSync(revDir, { recursive: true });
-  fs.writeFileSync(path.join(revDir, `${revId}.md`), content, 'utf8');
+  writeFileAtomic(path.join(revDir, `${revId}.md`), content, {
+    encoding: 'utf8',
+    backup: false,
+  });
 }
 
 function readRevSnapshot(docDir, revId) {
@@ -125,7 +146,10 @@ function readRevSnapshot(docDir, revId) {
 function writeVariantFile(docDir, versionName, content) {
   const verDir = path.join(docDir, 'versoes');
   fs.mkdirSync(verDir, { recursive: true });
-  fs.writeFileSync(path.join(verDir, `${versionName}.md`), content, 'utf8');
+  writeFileAtomic(path.join(verDir, `${versionName}.md`), content, {
+    encoding: 'utf8',
+    backup: false,
+  });
 }
 
 function readVariantFile(docDir, versionName) {
@@ -545,8 +569,7 @@ export function commitRevision(workspaceRoot, relPath, { content, version = 'pri
   const { abs } = getMainMdAbs(workspaceRoot, relPath);
 
   if (kind === 'init' && !fs.existsSync(abs)) {
-    fs.mkdirSync(path.dirname(abs), { recursive: true });
-    fs.writeFileSync(abs, normContent, 'utf8');
+    writeFileAtomic(abs, normContent, { encoding: 'utf8', backup: false });
     const baseline = ensureSyncedBaseline(workspaceRoot, relPath, { author });
     // Atualiza mensagem/kind da r001 caso informados
     if (baseline.index.revisions.length === 1) {
@@ -589,8 +612,7 @@ export function commitRevision(workspaceRoot, relPath, { content, version = 'pri
   }
 
   if (safeVer === 'principal') {
-    fs.mkdirSync(path.dirname(mainAbs), { recursive: true });
-    fs.writeFileSync(mainAbs, normContent, 'utf8');
+    writeFileAtomic(mainAbs, normContent, { encoding: 'utf8', backup: false });
   } else {
     writeVariantFile(docDir, safeVer, normContent);
   }
@@ -691,7 +713,7 @@ export function restoreRevision(
   const prevContent = targetMeta.headRev ? readRevSnapshot(docDir, targetMeta.headRev) : '';
 
   if (safeVer === 'principal') {
-    fs.writeFileSync(mainAbs, snapshotContent, 'utf8');
+    writeFileAtomic(mainAbs, snapshotContent, { encoding: 'utf8', backup: false });
   } else {
     writeVariantFile(docDir, safeVer, snapshotContent);
   }
@@ -731,7 +753,7 @@ export function promoteVersion(workspaceRoot, relPath, { versionName, author = '
   const primaryMeta = index.versions.principal;
   const prevContent = primaryMeta?.headRev ? readRevSnapshot(docDir, primaryMeta.headRev) : '';
 
-  fs.writeFileSync(mainAbs, variantContent, 'utf8');
+  writeFileAtomic(mainAbs, variantContent, { encoding: 'utf8', backup: false });
 
   const { record } = appendRevisionRecord(index, docDir, {
     version: 'principal',

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readJsonSafe, writeFileAtomic, writeJsonAtomic } from './lib/storage.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -327,10 +328,14 @@ function applyRemotePatch(existingRemote, patch = {}) {
   return out;
 }
 
+function getConfigQuarantineDir(targetPath) {
+  const dir = path.dirname(targetPath);
+  return dir === REPO_ROOT ? path.join(DATA_DIR, 'quarantine') : path.join(dir, 'quarantine');
+}
+
 function writeAndReloadConfig(config, draftRaw) {
   const targetPath = getWritableConfigPath(config);
-  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-  fs.writeFileSync(targetPath, `${JSON.stringify(draftRaw, null, 2)}\n`, 'utf8');
+  writeJsonAtomic(targetPath, draftRaw, { schemaVersion: 1, backup: true });
   const reloaded = loadConfig(['--config', targetPath], { ignoreEnv: true });
   Object.assign(config, reloaded);
   return config;
@@ -440,10 +445,14 @@ function applyChannelPatch(existing, patch) {
 
 export function saveConfigUpdates(config, payload = {}) {
   const working = serializeRawConfig(config);
-  const currentDiskRaw =
-    fs.existsSync(getWritableConfigPath(config))
-      ? JSON.parse(fs.readFileSync(getWritableConfigPath(config), 'utf8'))
-      : working;
+  const targetPath = getWritableConfigPath(config);
+  const currentDiskRaw = fs.existsSync(targetPath)
+    ? readJsonSafe(targetPath, {
+        defaultData: working,
+        schemaVersion: 1,
+        quarantineDir: getConfigQuarantineDir(targetPath),
+      })
+    : working;
 
   const prevPort = Number(currentDiskRaw.port || config.port || 4173);
   const prevHost = String(currentDiskRaw.host || config.host || '127.0.0.1');
@@ -528,16 +537,17 @@ export function saveConfigUpdates(config, payload = {}) {
 export function saveRemoteConfigUpdates(config, patch = {}) {
   const targetPath = getWritableConfigPath(config);
   const diskRaw = fs.existsSync(targetPath)
-    ? JSON.parse(fs.readFileSync(targetPath, 'utf8'))
+    ? readJsonSafe(targetPath, {
+        defaultData: serializeRawConfig(config),
+        schemaVersion: 1,
+        quarantineDir: getConfigQuarantineDir(targetPath),
+      })
     : serializeRawConfig(config);
 
   const nextRemote = applyRemotePatch(diskRaw.remote ?? config.remote, patch);
   diskRaw.remote = nextRemote;
 
-  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-  const tmpPath = `${targetPath}.tmp.${process.pid}.${Date.now()}`;
-  fs.writeFileSync(tmpPath, `${JSON.stringify(diskRaw, null, 2)}\n`, 'utf8');
-  fs.renameSync(tmpPath, targetPath);
+  writeJsonAtomic(targetPath, diskRaw, { schemaVersion: 1, backup: true });
 
   const runtimePort = config.port;
   const runtimeHost = config.host;
@@ -591,10 +601,10 @@ export function addChannelToConfig(config, channelPayload = {}) {
     if (!fs.existsSync(readmePath)) {
       const safeNameDoc = name.replace(/"/g, '\\"');
       const todayIso = new Date().toISOString().slice(0, 10);
-      fs.writeFileSync(
+      writeFileAtomic(
         readmePath,
         `---\nid: "${safeKey}-readme"\ntitulo: "Workspace ${safeNameDoc}"\ntipo: "referencia"\nstatus: "referencia"\nserie: "Canal & Ops"\nformato: "doc"\nprioridade: "alta"\nduracao_estimada: "3 min"\ndata_criacao: "${todayIso}"\ndata_alvo: ""\nrepo_github: ""\nyoutube_id: ""\nviews: 0\ntags: ["workspace", "${safeKey}"]\nresumo: "Guia inicial do workspace editorial ${safeNameDoc}."\n---\n\n# ${name}\n\nWorkspace criado pelo Crom YouTube Studio.\n`,
-        'utf8'
+        { encoding: 'utf8', backup: false }
       );
     }
   }

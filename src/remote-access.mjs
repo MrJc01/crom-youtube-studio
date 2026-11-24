@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import QRCode from 'qrcode';
 import { saveRemoteConfigUpdates } from './config.mjs';
+import { createPinRateLimiter } from './middleware/security.mjs';
 
 const COOKIE_NAME = 'crom_remote_pin';
 const PIN_TTL_MS = 12 * 60 * 60 * 1000;
@@ -286,6 +287,11 @@ function renderPinUnlockHtml() {
 
 export function createRemoteAccessManager({ config, getRequestHandler, onStatusChange = null }) {
   const sessionSecret = crypto.randomBytes(32);
+  const pinRateLimiter = createPinRateLimiter({
+    maxAttempts: 5,
+    windowMs: 5 * 60_000,
+    lockoutMs: 5 * 60_000,
+  });
 
   let mainPort = Number(config.port || 4173);
   let lanServer = null;
@@ -348,13 +354,71 @@ export function createRemoteAccessManager({ config, getRequestHandler, onStatusC
     return crypto.timingSafeEqual(providedSig, expectedSig);
   }
 
-  function validatePinSubmission(submittedPin) {
+  function checkPinHash(submittedPin) {
     const configuredPin = String(config.remote?.pinCode || '');
     const candidate = String(submittedPin || '');
     if (!configuredPin || !candidate) return false;
     const a = crypto.createHash('sha256').update(candidate, 'utf8').digest();
     const b = crypto.createHash('sha256').update(configuredPin, 'utf8').digest();
     return crypto.timingSafeEqual(a, b);
+  }
+
+  function extractClientIp(req) {
+    const sockIp = String(req?.socket?.remoteAddress || '').replace(/^::ffff:/i, '');
+    const isLoopbackSocket = sockIp === '127.0.0.1' || sockIp === '::1';
+    if (isLoopbackSocket) {
+      const xff = req?.headers?.['x-forwarded-for'];
+      if (xff && typeof xff === 'string') {
+        const first = xff.split(',')[0].trim();
+        if (first) return first;
+      }
+      const xReal = req?.headers?.['x-real-ip'];
+      if (xReal && typeof xReal === 'string' && xReal.trim()) {
+        return xReal.trim();
+      }
+    }
+    return sockIp || 'unknown';
+  }
+
+  function attemptPinUnlock(req, res, submittedPin) {
+    const pinGateActive = Boolean(config.remote?.pinEnabled && config.remote?.pinCode);
+    if (!pinGateActive) {
+      return { ok: true, unlocked: true, statusCode: 200 };
+    }
+    const clientIp = extractClientIp(req);
+    const limit = pinRateLimiter.check(clientIp);
+    if (!limit.allowed) {
+      return {
+        ok: false,
+        statusCode: 429,
+        retryAfterSec: limit.retryAfterSec,
+        error: `Muitas tentativas de PIN incorreto. Aguarde ${limit.retryAfterSec}s antes de tentar novamente.`,
+      };
+    }
+
+    const valid = checkPinHash(submittedPin);
+    if (!valid) {
+      const fail = pinRateLimiter.recordFailure(clientIp);
+      return {
+        ok: false,
+        statusCode: 401,
+        remainingAttempts: fail.remainingAttempts,
+        error: 'PIN incorreto.',
+      };
+    }
+
+    pinRateLimiter.reset(clientIp);
+    if (res) {
+      setPinAuthCookie(req, res);
+    }
+    return { ok: true, unlocked: true, statusCode: 200 };
+  }
+
+  function validatePinSubmission(submittedPin, req = null) {
+    if (req) {
+      return attemptPinUnlock(req, null, submittedPin);
+    }
+    return checkPinHash(submittedPin);
   }
 
   function setPinAuthCookie(req, res) {
@@ -731,6 +795,7 @@ export function createRemoteAccessManager({ config, getRequestHandler, onStatusC
       ...(pinCode !== undefined ? { pinCode } : {}),
       ...(clearPin ? { clearPin: true } : {}),
     });
+    pinRateLimiter.clearAll();
     notifyChange();
     return getStatus();
   }
@@ -838,6 +903,8 @@ export function createRemoteAccessManager({ config, getRequestHandler, onStatusC
     stopNgrok,
     updatePin,
     validatePinSubmission,
+    attemptPinUnlock,
+    pinRateLimiter,
     setPinAuthCookie,
     enforceRemotePin,
     initOnListen,

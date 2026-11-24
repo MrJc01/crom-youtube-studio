@@ -2,6 +2,8 @@ import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { readJsonSafe, writeJsonAtomic, withFileLock } from './lib/storage.mjs';
+import { moveToTrash } from './lib/trash.mjs';
 
 export const STUDIO_DATA_DIR_NAME = '.studio-data';
 export const NOTES_FILE_NAME = 'notas.json';
@@ -162,28 +164,29 @@ function defaultNotesData() {
 }
 
 function loadNotesData(wsPath) {
-  const { filePath, dirExists } = resolveNotesFilePath(wsPath, { createDir: false });
+  const { filePath, dataDirReal, dirExists } = resolveNotesFilePath(wsPath, { createDir: false });
   if (!dirExists || !fs.existsSync(filePath)) {
     return defaultNotesData();
   }
-  try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) || {};
-    const notes = Array.isArray(parsed.notes)
-      ? parsed.notes.map((n) => normalizeNote({ ...n, _preserveUpdatedAt: true }))
-      : [];
-    const gs = parsed.gistSync && typeof parsed.gistSync === 'object' ? parsed.gistSync : {};
-    return {
-      notes: sortNotes(notes),
-      gistSync: {
-        gistId: String(gs.gistId || ''),
-        gistUrl: String(gs.gistUrl || ''),
-        lastSyncedAt: String(gs.lastSyncedAt || ''),
-        lastError: String(gs.lastError || ''),
-      },
-    };
-  } catch {
-    return defaultNotesData();
-  }
+  const parsed =
+    readJsonSafe(filePath, {
+      defaultData: defaultNotesData(),
+      schemaVersion: 1,
+      quarantineDir: path.join(dataDirReal, 'quarantine'),
+    }) || {};
+  const notes = Array.isArray(parsed.notes)
+    ? parsed.notes.map((n) => normalizeNote({ ...n, _preserveUpdatedAt: true }))
+    : [];
+  const gs = parsed.gistSync && typeof parsed.gistSync === 'object' ? parsed.gistSync : {};
+  return {
+    notes: sortNotes(notes),
+    gistSync: {
+      gistId: String(gs.gistId || ''),
+      gistUrl: String(gs.gistUrl || ''),
+      lastSyncedAt: String(gs.lastSyncedAt || ''),
+      lastError: String(gs.lastError || ''),
+    },
+  };
 }
 
 function saveNotesData(wsPath, data) {
@@ -197,9 +200,7 @@ function saveNotesData(wsPath, data) {
       lastError: String(data.gistSync?.lastError || ''),
     },
   };
-  const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
-  fs.writeFileSync(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
-  fs.renameSync(tmpPath, filePath);
+  writeJsonAtomic(filePath, payload, { schemaVersion: 1, backup: true });
   return payload;
 }
 
@@ -207,69 +208,119 @@ export function listNotes(wsPath) {
   return loadNotesData(wsPath);
 }
 
-export function createNote(wsPath, payload = {}) {
-  const data = loadNotesData(wsPath);
-  const note = normalizeNote({
-    ...payload,
-    id: payload.id || genId('note'),
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+export async function createNote(wsPath, payload = {}) {
+  const { filePath } = resolveNotesFilePath(wsPath, { createDir: true });
+  return withFileLock(filePath, async () => {
+    const data = loadNotesData(wsPath);
+    const note = normalizeNote({
+      ...payload,
+      id: payload.id || genId('note'),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    if (data.notes.some((n) => n.id === note.id)) {
+      note.id = genId('note');
+    }
+
+    data.notes.unshift(note);
+    const saved = saveNotesData(wsPath, data);
+    const savedNote = saved.notes.find((n) => n.id === note.id) || note;
+    return {
+      note: savedNote,
+      notes: saved.notes,
+      gistSync: saved.gistSync,
+    };
   });
-
-  if (data.notes.some((n) => n.id === note.id)) {
-    note.id = genId('note');
-  }
-
-  data.notes.unshift(note);
-  const saved = saveNotesData(wsPath, data);
-  const savedNote = saved.notes.find((n) => n.id === note.id) || note;
-  return {
-    note: savedNote,
-    notes: saved.notes,
-    gistSync: saved.gistSync,
-  };
 }
 
-export function updateNote(wsPath, noteId, patch = {}) {
+export async function updateNote(wsPath, noteId, patch = {}) {
   const cleanId = String(noteId || '').trim();
   if (!cleanId) {
     throw httpError('ID da nota ausente', 400);
   }
-  const data = loadNotesData(wsPath);
-  const idx = data.notes.findIndex((n) => n.id === cleanId);
-  if (idx === -1) {
-    throw httpError(`Nota "${cleanId}" não encontrada`, 404);
-  }
+  const { filePath } = resolveNotesFilePath(wsPath, { createDir: true });
+  return withFileLock(filePath, async () => {
+    const data = loadNotesData(wsPath);
+    const idx = data.notes.findIndex((n) => n.id === cleanId);
+    if (idx === -1) {
+      throw httpError(`Nota "${cleanId}" não encontrada`, 404);
+    }
 
-  const updated = normalizeNote({ ...patch, id: cleanId }, data.notes[idx]);
-  data.notes[idx] = updated;
-  const saved = saveNotesData(wsPath, data);
-  const savedNote = saved.notes.find((n) => n.id === cleanId) || updated;
-  return {
-    note: savedNote,
-    notes: saved.notes,
-    gistSync: saved.gistSync,
-  };
+    const updated = normalizeNote({ ...patch, id: cleanId }, data.notes[idx]);
+    data.notes[idx] = updated;
+    const saved = saveNotesData(wsPath, data);
+    const savedNote = saved.notes.find((n) => n.id === cleanId) || updated;
+    return {
+      note: savedNote,
+      notes: saved.notes,
+      gistSync: saved.gistSync,
+    };
+  });
 }
 
-export function deleteNote(wsPath, noteId) {
+export async function deleteNote(wsPath, noteId) {
   const cleanId = String(noteId || '').trim();
   if (!cleanId) {
     throw httpError('ID da nota ausente', 400);
   }
-  const data = loadNotesData(wsPath);
-  const idx = data.notes.findIndex((n) => n.id === cleanId);
-  if (idx === -1) {
-    throw httpError(`Nota "${cleanId}" não encontrada`, 404);
-  }
+  const { wsReal, filePath } = resolveNotesFilePath(wsPath, { createDir: false });
+  return withFileLock(filePath, async () => {
+    const data = loadNotesData(wsPath);
+    const idx = data.notes.findIndex((n) => n.id === cleanId);
+    if (idx === -1) {
+      throw httpError(`Nota "${cleanId}" não encontrada`, 404);
+    }
 
-  data.notes.splice(idx, 1);
-  const saved = saveNotesData(wsPath, data);
-  return {
-    deletedId: cleanId,
-    notes: saved.notes,
-    gistSync: saved.gistSync,
-  };
+    const noteObj = data.notes[idx];
+    const trashed = await moveToTrash(wsReal, {
+      kind: 'note',
+      originalPath: `.studio-data/notas.json#${cleanId}`,
+      title: noteObj.title || 'Nota sem título',
+      itemPayload: noteObj,
+      metadata: {
+        noteId: cleanId,
+        color: noteObj.color || 'default',
+        linkedDocPath: noteObj.linkedDocPath || '',
+      },
+    });
+
+    data.notes.splice(idx, 1);
+    const saved = saveNotesData(wsPath, data);
+    return {
+      deletedId: cleanId,
+      trashed,
+      notes: saved.notes,
+      gistSync: saved.gistSync,
+    };
+  });
+}
+
+export async function upsertRestoredNote(wsPath, noteObj) {
+  if (!noteObj || typeof noteObj !== 'object' || Array.isArray(noteObj)) {
+    throw httpError('Payload de nota inválido para restauração', 400);
+  }
+  const { filePath } = resolveNotesFilePath(wsPath, { createDir: true });
+  return withFileLock(filePath, async () => {
+    const data = loadNotesData(wsPath);
+    const restored = normalizeNote({
+      ...noteObj,
+      _preserveUpdatedAt: Boolean(noteObj.updatedAt),
+    });
+    const idx = data.notes.findIndex((n) => n.id === restored.id);
+    if (idx !== -1) {
+      data.notes[idx] = restored;
+    } else {
+      data.notes.unshift(restored);
+    }
+    const saved = saveNotesData(wsPath, data);
+    const savedNote = saved.notes.find((n) => n.id === restored.id) || restored;
+    return {
+      note: savedNote,
+      notes: saved.notes,
+      gistSync: saved.gistSync,
+    };
+  });
 }
 
 export function exportNotes(wsPath, format = 'json') {
@@ -355,7 +406,7 @@ export function exportNotes(wsPath, format = 'json') {
   throw httpError(`Formato de exportação inválido: "${format}". Use json, md ou txt.`, 400);
 }
 
-export function importNotes(wsPath, payload) {
+export async function importNotes(wsPath, payload) {
   let rawObj = payload;
   if (typeof payload === 'string') {
     try {
@@ -389,45 +440,48 @@ export function importNotes(wsPath, payload) {
     throw httpError('Payload de importação deve conter um array "notes".', 400);
   }
 
-  const data = loadNotesData(wsPath);
-  let addedCount = 0;
-  let updatedCount = 0;
+  const { filePath } = resolveNotesFilePath(wsPath, { createDir: true });
+  return withFileLock(filePath, async () => {
+    const data = loadNotesData(wsPath);
+    let addedCount = 0;
+    let updatedCount = 0;
 
-  if (mode === 'replace') {
-    data.notes = incomingList.map((item) => {
-      addedCount += 1;
-      return normalizeNote({ ...item, _preserveUpdatedAt: Boolean(item?.updatedAt) });
-    });
-  } else {
-    const byId = new Map(data.notes.map((n) => [n.id, n]));
-    for (const rawItem of incomingList) {
-      if (!rawItem || typeof rawItem !== 'object') continue;
-      const incomingId = rawItem.id ? String(rawItem.id).trim() : '';
-      const existing = incomingId ? byId.get(incomingId) : null;
-      const normalized = normalizeNote(
-        { ...rawItem, _preserveUpdatedAt: Boolean(rawItem.updatedAt) },
-        existing || null
-      );
-      if (existing) {
-        byId.set(normalized.id, normalized);
-        updatedCount += 1;
-      } else {
-        byId.set(normalized.id, normalized);
+    if (mode === 'replace') {
+      data.notes = incomingList.map((item) => {
         addedCount += 1;
+        return normalizeNote({ ...item, _preserveUpdatedAt: Boolean(item?.updatedAt) });
+      });
+    } else {
+      const byId = new Map(data.notes.map((n) => [n.id, n]));
+      for (const rawItem of incomingList) {
+        if (!rawItem || typeof rawItem !== 'object') continue;
+        const incomingId = rawItem.id ? String(rawItem.id).trim() : '';
+        const existing = incomingId ? byId.get(incomingId) : null;
+        const normalized = normalizeNote(
+          { ...rawItem, _preserveUpdatedAt: Boolean(rawItem.updatedAt) },
+          existing || null
+        );
+        if (existing) {
+          byId.set(normalized.id, normalized);
+          updatedCount += 1;
+        } else {
+          byId.set(normalized.id, normalized);
+          addedCount += 1;
+        }
       }
+      data.notes = Array.from(byId.values());
     }
-    data.notes = Array.from(byId.values());
-  }
 
-  const saved = saveNotesData(wsPath, data);
-  return {
-    importedCount: addedCount + updatedCount,
-    addedCount,
-    updatedCount,
-    total: saved.notes.length,
-    notes: saved.notes,
-    gistSync: saved.gistSync,
-  };
+    const saved = saveNotesData(wsPath, data);
+    return {
+      importedCount: addedCount + updatedCount,
+      addedCount,
+      updatedCount,
+      total: saved.notes.length,
+      notes: saved.notes,
+      gistSync: saved.gistSync,
+    };
+  });
 }
 
 function runGh(args, { input = null, timeout = 15000 } = {}) {
@@ -495,194 +549,191 @@ export async function syncNotesGist(wsPath, channelKey, mode = 'sync') {
     ? String(mode || 'sync').toLowerCase()
     : 'sync';
   const fileName = `crom-studio-notas-${safeChannel}.json`;
-  const data = loadNotesData(wsPath);
+  const { filePath } = resolveNotesFilePath(wsPath, { createDir: true });
 
-  const recordFailure = (errorMsg, hint) => {
-    data.gistSync = {
-      ...data.gistSync,
-      lastError: errorMsg,
-    };
-    const saved = saveNotesData(wsPath, data);
-    return {
-      ok: false,
-      error: errorMsg,
-      hint,
-      gistSync: saved.gistSync,
-      notes: saved.notes,
-    };
-  };
+  return withFileLock(filePath, async () => {
+    const data = loadNotesData(wsPath);
 
-  try {
-    await runGh(['auth', 'status'], { timeout: 6000 });
-  } catch (err) {
-    if (err.code === 'ENOENT') {
+    const recordFailure = (errorMsg, hint) => {
+      data.gistSync = {
+        ...data.gistSync,
+        lastError: errorMsg,
+      };
+      const saved = saveNotesData(wsPath, data);
+      return {
+        ok: false,
+        error: errorMsg,
+        hint,
+        gistSync: saved.gistSync,
+        notes: saved.notes,
+      };
+    };
+
+    try {
+      await runGh(['auth', 'status'], { timeout: 6000 });
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        return recordFailure(
+          'GitHub CLI (gh) não está instalado neste sistema.',
+          'Instale o pacote "gh" e execute "gh auth login" com permissão de gist.'
+        );
+      }
       return recordFailure(
-        'GitHub CLI (gh) não está instalado neste sistema.',
-        'Instale o pacote "gh" e execute "gh auth login" com permissão de gist.'
+        'GitHub CLI (gh) não está autenticado.',
+        'Execute "gh auth login" (ou "gh auth refresh -s gist") no terminal para sincronizar suas notas em um Gist privado.'
       );
     }
-    return recordFailure(
-      'GitHub CLI (gh) não está autenticado.',
-      'Execute "gh auth login" (ou "gh auth refresh -s gist") no terminal para sincronizar suas notas em um Gist privado.'
-    );
-  }
 
-  try {
-    let gistId = data.gistSync.gistId || '';
-    let gistUrl = data.gistSync.gistUrl || '';
-    let remoteGist = null;
+    try {
+      let gistId = data.gistSync.gistId || '';
+      let gistUrl = data.gistSync.gistUrl || '';
+      let remoteGist = null;
 
-    if (gistId) {
-      try {
-        const { stdout } = await runGh(['api', `gists/${gistId}`]);
-        const parsedGist = JSON.parse(stdout);
-        if (parsedGist && parsedGist.public === false) {
-          remoteGist = parsedGist;
-          gistUrl = parsedGist.html_url || gistUrl;
-        } else if (parsedGist && parsedGist.public === true) {
-          // Nunca reutilizar gist público para notas privadas
+      if (gistId) {
+        try {
+          const { stdout } = await runGh(['api', `gists/${gistId}`]);
+          const parsedGist = JSON.parse(stdout);
+          if (parsedGist && parsedGist.public === false) {
+            remoteGist = parsedGist;
+            gistUrl = parsedGist.html_url || gistUrl;
+          } else if (parsedGist && parsedGist.public === true) {
+            // Nunca reutilizar gist público para notas privadas
+            gistId = '';
+            gistUrl = '';
+          }
+        } catch {
+          if (cleanMode === 'pull') {
+            return recordFailure(
+              `Gist privado "${gistId}" não encontrado no GitHub.`,
+              'Execute uma sincronização (sync/push) para recriar o Gist privado.'
+            );
+          }
           gistId = '';
           gistUrl = '';
         }
-      } catch {
+      }
+
+      if (!gistId) {
+        const { stdout: listOut } = await runGh(['api', 'gists?per_page=30']);
+        const gists = JSON.parse(listOut || '[]');
+        const existingSecret = Array.isArray(gists)
+          ? gists.find((g) => g && g.public === false && g.files && g.files[fileName])
+          : null;
+        if (existingSecret) {
+          gistId = existingSecret.id;
+          gistUrl = existingSecret.html_url || '';
+          const { stdout: fullOut } = await runGh(['api', `gists/${gistId}`]);
+          remoteGist = JSON.parse(fullOut);
+        }
+      }
+
+      let addedFromRemote = 0;
+      let updatedFromRemote = 0;
+
+      if (remoteGist && (cleanMode === 'pull' || cleanMode === 'sync')) {
+        const fileObj =
+          remoteGist.files?.[fileName] ||
+          Object.values(remoteGist.files || {}).find((f) => f && f.filename?.endsWith('.json'));
+        if (fileObj?.content) {
+          try {
+            const remoteParsed = JSON.parse(fileObj.content);
+            const remoteNotes = Array.isArray(remoteParsed?.notes)
+              ? remoteParsed.notes
+              : Array.isArray(remoteParsed)
+              ? remoteParsed
+              : [];
+            const mergedRes = mergeNoteArrays(data.notes, remoteNotes);
+            data.notes = mergedRes.merged;
+            addedFromRemote = mergedRes.addedFromRemote;
+            updatedFromRemote = mergedRes.updatedFromRemote;
+          } catch {
+            // JSON remoto inválido: sobrescreve no push se estiver em sync
+          }
+        }
+      }
+
+      if (!gistId) {
         if (cleanMode === 'pull') {
           return recordFailure(
-            `Gist privado "${gistId}" não encontrado no GitHub.`,
-            'Execute uma sincronização (sync/push) para recriar o Gist privado.'
+            'Nenhum Gist privado de notas foi encontrado nesta conta GitHub.',
+            'Crie ou sincronize suas notas primeiro para gerar o Gist privado.'
           );
         }
-        gistId = '';
-        gistUrl = '';
-      }
-    }
 
-    if (!gistId) {
-      const { stdout: listOut } = await runGh(['api', 'gists?per_page=30']);
-      const gists = JSON.parse(listOut || '[]');
-      const existingSecret = Array.isArray(gists)
-        ? gists.find((g) => g && g.public === false && g.files && g.files[fileName])
-        : null;
-      if (existingSecret) {
-        gistId = existingSecret.id;
-        gistUrl = existingSecret.html_url || '';
-        const { stdout: fullOut } = await runGh(['api', `gists/${gistId}`]);
-        remoteGist = JSON.parse(fullOut);
-      }
-    }
-
-    let addedFromRemote = 0;
-    let updatedFromRemote = 0;
-
-    if (remoteGist && (cleanMode === 'pull' || cleanMode === 'sync')) {
-      const fileObj =
-        remoteGist.files?.[fileName] ||
-        Object.values(remoteGist.files || {}).find((f) => f && f.filename?.endsWith('.json'));
-      if (fileObj?.content) {
-        try {
-          const remoteParsed = JSON.parse(fileObj.content);
-          const remoteNotes = Array.isArray(remoteParsed?.notes)
-            ? remoteParsed.notes
-            : Array.isArray(remoteParsed)
-            ? remoteParsed
-            : [];
-          if (cleanMode === 'pull') {
-            const mergedRes = mergeNoteArrays(data.notes, remoteNotes);
-            data.notes = mergedRes.merged;
-            addedFromRemote = mergedRes.addedFromRemote;
-            updatedFromRemote = mergedRes.updatedFromRemote;
-          } else {
-            const mergedRes = mergeNoteArrays(data.notes, remoteNotes);
-            data.notes = mergedRes.merged;
-            addedFromRemote = mergedRes.addedFromRemote;
-            updatedFromRemote = mergedRes.updatedFromRemote;
-          }
-        } catch {
-          // JSON remoto inválido: sobrescreve no push se estiver em sync
-        }
-      }
-    }
-
-    if (!gistId) {
-      if (cleanMode === 'pull') {
-        return recordFailure(
-          'Nenhum Gist privado de notas foi encontrado nesta conta GitHub.',
-          'Crie ou sincronize suas notas primeiro para gerar o Gist privado.'
-        );
-      }
-
-      const bodyJson = JSON.stringify(
-        {
-          version: 1,
-          channel: safeChannel,
-          updatedAt: new Date().toISOString(),
-          notes: sortNotes(data.notes),
-        },
-        null,
-        2
-      );
-
-      // SEMPRE secreto/privado: gh gist create é privado por padrão (NUNCA passar --public)
-      const { stdout } = await runGh(
-        ['gist', 'create', '-', '-f', fileName, '-d', `Crom YouTube Studio — Notas (${safeChannel})`],
-        { input: bodyJson }
-      );
-      const createdUrl = stdout
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .find((l) => l.startsWith('https://'));
-      gistUrl = createdUrl || '';
-      gistId = createdUrl ? createdUrl.split('/').filter(Boolean).pop() || '' : '';
-    } else if (cleanMode === 'push' || cleanMode === 'sync') {
-      const bodyJson = JSON.stringify(
-        {
-          version: 1,
-          channel: safeChannel,
-          updatedAt: new Date().toISOString(),
-          notes: sortNotes(data.notes),
-        },
-        null,
-        2
-      );
-      const patchPayload = JSON.stringify({
-        description: `Crom YouTube Studio — Notas (${safeChannel})`,
-        files: {
-          [fileName]: {
-            content: bodyJson,
+        const bodyJson = JSON.stringify(
+          {
+            version: 1,
+            channel: safeChannel,
+            updatedAt: new Date().toISOString(),
+            notes: sortNotes(data.notes),
           },
-        },
-      });
-      const { stdout } = await runGh(['api', '-X', 'PATCH', `gists/${gistId}`, '--input', '-'], {
-        input: patchPayload,
-      });
-      const updatedGist = JSON.parse(stdout || '{}');
-      gistUrl = updatedGist.html_url || gistUrl;
+          null,
+          2
+        );
+
+        // SEMPRE secreto/privado: gh gist create é privado por padrão (NUNCA passar --public)
+        const { stdout } = await runGh(
+          ['gist', 'create', '-', '-f', fileName, '-d', `Crom YouTube Studio — Notas (${safeChannel})`],
+          { input: bodyJson }
+        );
+        const createdUrl = stdout
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .find((l) => l.startsWith('https://'));
+        gistUrl = createdUrl || '';
+        gistId = createdUrl ? createdUrl.split('/').filter(Boolean).pop() || '' : '';
+      } else if (cleanMode === 'push' || cleanMode === 'sync') {
+        const bodyJson = JSON.stringify(
+          {
+            version: 1,
+            channel: safeChannel,
+            updatedAt: new Date().toISOString(),
+            notes: sortNotes(data.notes),
+          },
+          null,
+          2
+        );
+        const patchPayload = JSON.stringify({
+          description: `Crom YouTube Studio — Notas (${safeChannel})`,
+          files: {
+            [fileName]: {
+              content: bodyJson,
+            },
+          },
+        });
+        const { stdout } = await runGh(['api', '-X', 'PATCH', `gists/${gistId}`, '--input', '-'], {
+          input: patchPayload,
+        });
+        const updatedGist = JSON.parse(stdout || '{}');
+        gistUrl = updatedGist.html_url || gistUrl;
+      }
+
+      data.gistSync = {
+        gistId,
+        gistUrl,
+        lastSyncedAt: new Date().toISOString(),
+        lastError: '',
+      };
+      const saved = saveNotesData(wsPath, data);
+
+      return {
+        ok: true,
+        mode: cleanMode,
+        isPrivate: true,
+        addedFromRemote,
+        updatedFromRemote,
+        gistSync: saved.gistSync,
+        notes: saved.notes,
+      };
+    } catch (err) {
+      const rawMsg = String(err.stderr || err.message || 'Erro ao sincronizar Gist privado');
+      const needsScope = /403|scope|gist|authentication/i.test(rawMsg);
+      return recordFailure(
+        `Falha ao sincronizar Gist privado: ${rawMsg.split(/\r?\n/)[0]}`,
+        needsScope
+          ? 'Execute "gh auth refresh -s gist" no terminal para habilitar o escopo de Gist.'
+          : 'Verifique sua conexão com a internet e o status de "gh auth status".'
+      );
     }
-
-    data.gistSync = {
-      gistId,
-      gistUrl,
-      lastSyncedAt: new Date().toISOString(),
-      lastError: '',
-    };
-    const saved = saveNotesData(wsPath, data);
-
-    return {
-      ok: true,
-      mode: cleanMode,
-      isPrivate: true,
-      addedFromRemote,
-      updatedFromRemote,
-      gistSync: saved.gistSync,
-      notes: saved.notes,
-    };
-  } catch (err) {
-    const rawMsg = String(err.stderr || err.message || 'Erro ao sincronizar Gist privado');
-    const needsScope = /403|scope|gist|authentication/i.test(rawMsg);
-    return recordFailure(
-      `Falha ao sincronizar Gist privado: ${rawMsg.split(/\r?\n/)[0]}`,
-      needsScope
-        ? 'Execute "gh auth refresh -s gist" no terminal para habilitar o escopo de Gist.'
-        : 'Verifique sua conexão com a internet e o status de "gh auth status".'
-    );
-  }
+  });
 }
