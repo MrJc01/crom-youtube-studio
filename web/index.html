@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Crom YouTube Studio</title>
+  <meta name="description" content="Painel editorial multi-canal para YouTube (MrJ & Crom), leitura de roteiros Markdown, teleprompter, RSS e ponte Kdenlive/MCP.">
+  <link rel="icon" type="image/png" href="/assets/crom-logo.png">
+  <link rel="alternate icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2311111b'/%3E%3Cpath d='M14 44V20l10 13 10-13v24M42 20v16c0 5-3 8-8 8' fill='none' stroke='%23ffffff' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='49' cy='21' r='4' fill='%23e12d78'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Camada atmosférica com orbes suaves ligados ao ColorFlowEngine -->
+  <div class="aurora-stage" aria-hidden="true">
+    <div class="aurora-orb orb-top-left"></div>
+    <div class="aurora-orb orb-top-right"></div>
+    <div class="aurora-orb orb-bottom-left"></div>
+    <div class="aurora-orb orb-bottom-right"></div>
+    <div class="aurora-noise"></div>
+  </div>
+
+  <div class="viewport-frame">
+    <div id="app" class="studio-shell">
+      <!-- Sidebar slim esquerda com Workspace Switcher 1-clique no topo -->
+      <aside class="sidebar" aria-label="Navegação principal">
+        <div class="sidebar-top">
+          <button class="brand-btn" id="brandBtn" title="Crom YouTube Studio — Ir para Visão Geral">
+            <img src="../assets/crom-logo.png" alt="Crom Studio" class="brand-logo-img" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+            <svg width="24" height="22" viewBox="0 0 28 22" fill="none" aria-hidden="true" style="display:none;">
+              <path d="M2.5 18.5V3.5L9.5 13L16.5 3.5V18.5" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M21 4V14.5C21 17 19.3 18.5 16.8 18.5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+              <circle cx="24.5" cy="4.5" r="2.2" fill="var(--accent)"/>
+            </svg>
+          </button>
+
+          <div class="sidebar-channels" id="sidebarChannelSwitcher" aria-label="Trocar canal em 1 clique"></div>
+        </div>
+
+        <nav class="side-nav" id="sideNav">
+          <button class="nav-item active" data-view="dashboard" title="Visão Geral">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V20h14V9.5"/><path d="M9.5 20v-5.5h5V20"/></svg>
+          </button>
+
+          <button class="nav-item" data-view="scripts" title="Roteiros & Leitor (.md)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/></svg>
+            <span class="nav-badge" id="navDocsCount">0</span>
+          </button>
+
+          <button class="nav-item" data-view="pipeline" title="Pipeline Kanban">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="5" height="16" rx="1.4"/><rect x="10" y="4" width="5" height="11" rx="1.4"/><rect x="17" y="4" width="4" height="14" rx="1.4"/></svg>
+          </button>
+
+          <button class="nav-item" data-view="ideas" title="Ideias, Séries & GitHub">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V18h6v-1.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg>
+          </button>
+
+          <button class="nav-item" data-view="catalog" title="Catálogo YouTube">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5" width="19" height="14" rx="4"/><path d="M10 9l5.5 3-5.5 3V9z" fill="currentColor" stroke="none"/></svg>
+          </button>
+
+          <button class="nav-item" data-view="production" title="Produção & Ponte Kdenlive">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="16.5" rx="2.5"/><path d="M16 2.5v4M8 2.5v4M3 9.5h18"/><path d="M8.5 14l2.2 2.2 4.8-4.7"/></svg>
+          </button>
+
+          <button class="nav-item" data-view="agent" title="Central do Agente & Arquivos">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 4.8L19 10l-4.8 2.2L12 17l-2.2-4.8L5 10l4.8-2.2z"/><path d="M5 19h14"/></svg>
+          </button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <button class="icon-circle-btn" id="colorToggleBtn" title="Controle de Cores Dinâmicas">
+            <span class="color-dot-live"></span>
+          </button>
+          <button class="avatar-btn" id="channelAvatarBtn" title="Ver Catálogo do Canal">
+            <img id="channelAvatarImg" alt="Avatar do canal" referrerpolicy="no-referrer">
+            <span class="avatar-fallback" id="channelAvatarFallback">MJ</span>
+          </button>
+        </div>
+      </aside>
+
+      <!-- Área Principal -->
+      <div class="main-column">
+        <header class="topbar">
+          <div class="topbar-left">
+            <h1 class="page-title" id="pageTitle">Visão Geral</h1>
+            <div class="channel-switcher" id="headerChannelSwitcher" aria-label="Alternar workspace de canal"></div>
+          </div>
+
+          <div class="topbar-right">
+            <div class="header-kpi-group" id="headerKpis">
+              <div class="header-kpi">
+                <span class="hk-label">em produção</span>
+                <span class="hk-value" id="hkProdValue">0</span>
+                <span class="hk-sub" id="hkProdSub">roteiros</span>
+              </div>
+              <div class="hk-divider"></div>
+              <div class="header-kpi">
+                <span class="hk-label" id="hkViewsLabel">alcance total</span>
+                <span class="hk-value" id="hkViewsValue">0</span>
+                <span class="hk-sub" id="hkViewsSub">0 inscritos</span>
+              </div>
+            </div>
+
+            <div class="topbar-actions">
+              <button class="pill-btn" id="cmdSearchBtn" title="Busca Rápida (Ctrl+K)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+                <span class="hide-sm">Buscar</span>
+                <kbd>Ctrl K</kbd>
+              </button>
+
+              <div class="color-popover-anchor">
+                <button class="pill-btn color-pill" id="colorPillBtn" title="Modo de cor dinâmico">
+                  <span class="color-swatch"></span>
+                  <span id="colorPillLabel">Crom Magenta</span>
+                </button>
+                <div class="popover-menu hidden" id="colorMenu">
+                  <div class="popover-head">
+                    <span>Fluxo de Cores</span>
+                    <label class="switch-inline">
+                      <input type="checkbox" id="dynamicFlowToggle" checked>
+                      <span>Dinâmico</span>
+                    </label>
+                  </div>
+                  <div class="speed-row">
+                    <span>Velocidade:</span>
+                    <div class="seg-mini" id="flowSpeedGroup">
+                      <button data-speed="slow">Ultra Suave</button>
+                      <button data-speed="medium" class="active">Suave</button>
+                      <button data-speed="fast">Vivo</button>
+                    </div>
+                  </div>
+                  <div class="palette-list" id="paletteList"></div>
+                </div>
+              </div>
+
+              <button class="pill-btn mode-pill" id="connectionModeBtn" title="Status de persistência dos arquivos">
+                <span class="status-dot"></span>
+                <span id="connectionModeLabel">Standalone</span>
+              </button>
+
+              <button class="bell-btn" id="notifBtn" title="Pendências & Alertas do Estúdio">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                <span class="bell-badge" id="notifCount">0</span>
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main class="view-container" id="viewContainer"></main>
+      </div>
+    </div>
+  </div>
+
+  <!-- Botão Flutuante + (FAB) -->
+  <button class="fab-add" id="fabNewBtn" title="Novo Roteiro, Série, Short ou Ideia (N)">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+  </button>
+
+  <!-- Modal: Novo Documento -->
+  <div class="modal-backdrop hidden" id="newDocModal">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="newDocModalTitle">
+      <div class="modal-head">
+        <h2 id="newDocModalTitle">Criar Novo Arquivo Markdown</h2>
+        <button class="icon-close" data-close-modal="newDocModal">✕</button>
+      </div>
+      <form id="newDocForm" class="modal-form">
+        <div class="form-row-2">
+          <label>
+            <span>Tipo / Template</span>
+            <select id="newDocType">
+              <option value="episodio-serie">Episódio de Série (06-series/&lt;serie&gt;/)</option>
+              <option value="roteiro-longo">Roteiro Longo (02-roteiros/rascunhos)</option>
+              <option value="short">Short 35-55s (03-shorts)</option>
+              <option value="ideia">Ficha de Ideia (01-ideias)</option>
+              <option value="post-mortem">Post-Mortem (02-roteiros/publicados)</option>
+            </select>
+          </label>
+          <label>
+            <span>Série / Pilar</span>
+            <select id="newDocSerie"></select>
+          </label>
+        </div>
+
+        <label>
+          <span>Título</span>
+          <input type="text" id="newDocTitle" placeholder="Ex.: Imagine um sistema para..." required>
+        </label>
+
+        <div class="form-row-3">
+          <label>
+            <span>Pasta de destino</span>
+            <select id="newDocFolder"></select>
+          </label>
+          <label>
+            <span>Repo GitHub (opcional)</span>
+            <input type="text" id="newDocRepo" placeholder="MrJc01">
+          </label>
+          <label>
+            <span>Data alvo</span>
+            <input type="date" id="newDocTargetDate">
+          </label>
+        </div>
+
+        <label>
+          <span>Resumo / Premissa</span>
+          <textarea id="newDocSummary" rows="2" placeholder="Ideia principal do vídeo, gancho ou resultado esperado..."></textarea>
+        </label>
+
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" data-close-modal="newDocModal">Cancelar</button>
+          <button type="submit" class="btn-primary">Criar & Abrir no Leitor</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Produzir no Kdenlive / MCP -->
+  <div class="modal-backdrop hidden" id="kdenliveModal">
+    <div class="modal-card modal-card-wide" role="dialog" aria-modal="true" aria-labelledby="kdenliveModalTitle">
+      <div class="modal-head">
+        <h2 id="kdenliveModalTitle">Produzir no Kdenlive + MCP</h2>
+        <button class="icon-close" data-close-modal="kdenliveModal">✕</button>
+      </div>
+      <div class="modal-form" id="kdenliveModalBody"></div>
+    </div>
+  </div>
+
+  <!-- Modal: Busca Rápida (Ctrl+K) -->
+  <div class="modal-backdrop hidden" id="cmdModal">
+    <div class="modal-card cmd-card" role="dialog" aria-modal="true">
+      <div class="cmd-input-wrap">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+        <input type="text" id="cmdInput" placeholder="Buscar roteiros, séries, ideias, vídeos do canal...">
+        <kbd>ESC</kbd>
+      </div>
+      <div class="cmd-results" id="cmdResults"></div>
+    </div>
+  </div>
+
+  <!-- Drawer de Notificações -->
+  <div class="drawer-backdrop hidden" id="notifDrawer">
+    <aside class="drawer-panel">
+      <div class="modal-head">
+        <h2>Radar do Laboratório</h2>
+        <button class="icon-close" id="closeNotifBtn">✕</button>
+      </div>
+      <div class="drawer-body" id="notifBody"></div>
+    </aside>
+  </div>
+
+  <!-- Toast feedback -->
+  <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+  <!-- Scripts clássicos (compatíveis com file:// e localhost sem CORS) -->
+  <script defer src="data.js"></script>
+  <script defer src="markdown.js"></script>
+  <script defer src="app.js"></script>
+</body>
+</html>

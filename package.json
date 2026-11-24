@@ -1,0 +1,26 @@
+{
+  "name": "crom-youtube-studio",
+  "version": "1.0.0",
+  "description": "Painel editorial multi-canal para YouTube com leitor/teleprompter Markdown, sincronizador RSS e ponte Kdenlive/MCP — zero dependências externas.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "crom-studio": "./bin/crom-studio"
+  },
+  "scripts": {
+    "sync": "node src/sync.mjs",
+    "sync:youtube": "node src/sync.mjs --youtube",
+    "start": "node src/server.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "youtube",
+    "markdown",
+    "teleprompter",
+    "kdenlive",
+    "studio",
+    "rss"
+  ]
+}

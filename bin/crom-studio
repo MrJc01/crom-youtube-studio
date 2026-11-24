@@ -1,0 +1,288 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resolve real script path even when invoked via symlinks
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+BIN_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+REPO_ROOT="$(cd -P "$BIN_DIR/.." && pwd)"
+
+# Ensure Node >= 20 (.local/bin, nvm) comes before /usr/bin in desktop sessions
+if [[ -d "$HOME/.local/bin" ]]; then
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+if compgen -G "$HOME/.nvm/versions/node/v*/bin" >/dev/null 2>&1; then
+  NVM_LATEST="$(ls -d "$HOME"/.nvm/versions/node/v*/bin 2>/dev/null | sort -V | tail -n 1 || true)"
+  if [[ -n "$NVM_LATEST" && -d "$NVM_LATEST" ]]; then
+    export PATH="$NVM_LATEST:$PATH"
+  fi
+fi
+
+NODE_BIN="${CROM_STUDIO_NODE:-$(command -v node || true)}"
+PYTHON_BIN="${CROM_STUDIO_PYTHON:-$(command -v python3 || true)}"
+TRAY_SCRIPT="$REPO_ROOT/tray/tray.py"
+SYNC_SCRIPT="$REPO_ROOT/src/sync.mjs"
+SERVER_SCRIPT="$REPO_ROOT/src/server.mjs"
+SOCK_PATH="${CROM_STUDIO_TRAY_SOCK:-/tmp/crom-youtube-studio-tray.sock}"
+TRAY_LOG="/tmp/crom-youtube-studio-tray.log"
+
+MODE="tray"
+DO_OPEN=0
+NO_OPEN=0
+NO_AUTOSTART=0
+CANAL=""
+
+usage() {
+  cat <<'EOF'
+Uso: crom-studio [opções]
+
+Opções:
+  --tray            Inicia ou aciona o ícone na bandeja do sistema (padrão)
+  --open            Abre o Studio no navegador padrão
+  --no-open         Não abre o navegador ao iniciar/acionar o tray
+  --canal mrj|crom  Seleciona o canal alvo (mrj ou crom)
+  --server          Executa o servidor web Node em foreground
+  --sync            Sincroniza Markdown + caches locais (node src/sync.mjs)
+  --sync-youtube    Sincroniza Markdown + YouTube RSS (node src/sync.mjs --youtube)
+  --no-autostart    Inicia o tray sem ligar o servidor web automaticamente
+  --check           Valida dependências GTK/Ayatana e arquivos do tray
+  --status          Consulta o status da instância ativa do tray
+  --quit            Encerra a instância ativa do tray e o servidor gerenciado
+  -h, --help        Exibe esta ajuda
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --tray)
+      MODE="tray"
+      shift
+      ;;
+    --server)
+      MODE="server"
+      shift
+      ;;
+    --sync)
+      MODE="sync"
+      shift
+      ;;
+    --sync-youtube)
+      MODE="sync-youtube"
+      shift
+      ;;
+    --check)
+      MODE="check"
+      shift
+      ;;
+    --status)
+      MODE="status"
+      shift
+      ;;
+    --quit)
+      MODE="quit"
+      shift
+      ;;
+    --open)
+      DO_OPEN=1
+      shift
+      ;;
+    --no-open)
+      NO_OPEN=1
+      DO_OPEN=0
+      shift
+      ;;
+    --no-autostart)
+      NO_AUTOSTART=1
+      shift
+      ;;
+    --canal)
+      if [[ $# -lt 2 ]]; then
+        echo "Erro: --canal requer um valor (mrj ou crom)." >&2
+        exit 1
+      fi
+      CANAL="$2"
+      shift 2
+      ;;
+    --canal=*)
+      CANAL="${1#*=}"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Opção desconhecida: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -n "$CANAL" && "$CANAL" != "mrj" && "$CANAL" != "crom" ]]; then
+  echo "Erro: canal inválido '$CANAL'. Use 'mrj' ou 'crom'." >&2
+  exit 1
+fi
+
+require_node() {
+  if [[ -z "$NODE_BIN" ]]; then
+    echo "Erro: binário 'node' não encontrado no PATH." >&2
+    exit 1
+  fi
+}
+
+require_python() {
+  if [[ -z "$PYTHON_BIN" ]]; then
+    echo "Erro: binário 'python3' não encontrado no PATH." >&2
+    exit 1
+  fi
+}
+
+ensure_initial_sync() {
+  if [[ ! -f "$REPO_ROOT/data/data.js" && -f "$SYNC_SCRIPT" ]]; then
+    require_node
+    echo "▶ Primeira execução: gerando data/data.js via sync.mjs..."
+    "$NODE_BIN" "$SYNC_SCRIPT"
+  fi
+}
+
+send_tray_socket() {
+  local cmd="$1"
+  require_python
+  "$PYTHON_BIN" - "$SOCK_PATH" "$cmd" <<'PY'
+import socket, sys
+sock_path, cmd = sys.argv[1], sys.argv[2]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(1.2)
+try:
+    s.connect(sock_path)
+    s.sendall((cmd + "\n").encode("utf-8"))
+    data = s.recv(4096).decode("utf-8", errors="replace").strip()
+    if data:
+        print(data)
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+finally:
+    s.close()
+PY
+}
+
+case "$MODE" in
+  check)
+    require_python
+    exec "$PYTHON_BIN" "$TRAY_SCRIPT" --check
+    ;;
+  sync)
+    require_node
+    cd "$REPO_ROOT"
+    exec "$NODE_BIN" "$SYNC_SCRIPT"
+    ;;
+  sync-youtube)
+    require_node
+    cd "$REPO_ROOT"
+    exec "$NODE_BIN" "$SYNC_SCRIPT" --youtube
+    ;;
+  status)
+    if ! send_tray_socket "status"; then
+      echo "Tray não está em execução (socket inativo em $SOCK_PATH)." >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  quit)
+    if ! send_tray_socket "quit"; then
+      echo "Tray não está em execução." >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  server)
+    require_node
+    ensure_initial_sync
+    cd "$REPO_ROOT"
+    if [[ "$DO_OPEN" -eq 1 && "$NO_OPEN" -eq 0 ]] && command -v xdg-open >/dev/null 2>&1; then
+      TARGET_CANAL="${CANAL:-mrj}"
+      URL="http://127.0.0.1:${PORT:-4173}/?canal=${TARGET_CANAL}"
+      (sleep 1 && xdg-open "$URL" >/dev/null 2>&1 &) || true
+    fi
+    exec "$NODE_BIN" "$SERVER_SCRIPT"
+    ;;
+  tray)
+    require_python
+    ensure_initial_sync
+    TARGET_CANAL="${CANAL:-mrj}"
+
+    if [[ -S "$SOCK_PATH" ]]; then
+      CMD="open:${TARGET_CANAL}"
+      if [[ "$NO_OPEN" -eq 1 ]]; then
+        CMD="start"
+      fi
+      if send_tray_socket "$CMD"; then
+        exit 0
+      fi
+    fi
+
+    TRAY_ARGS=()
+    if [[ "$DO_OPEN" -eq 1 && "$NO_OPEN" -eq 0 ]]; then
+      TRAY_ARGS+=(--open)
+    elif [[ "$NO_OPEN" -eq 1 ]]; then
+      TRAY_ARGS+=(--no-open)
+    fi
+    if [[ -n "$CANAL" ]]; then
+      TRAY_ARGS+=(--canal "$CANAL")
+    fi
+    if [[ "$NO_AUTOSTART" -eq 1 ]]; then
+      TRAY_ARGS+=(--no-autostart)
+    fi
+
+    export DISPLAY="${DISPLAY:-:0}"
+    export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+    export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
+
+    LAUNCHED=0
+    if command -v systemd-run >/dev/null 2>&1 && [[ -S "${XDG_RUNTIME_DIR}/bus" ]]; then
+      SD_ENV_ARGS=(
+        "--setenv=HOME=$HOME"
+        "--setenv=PATH=$PATH"
+        "--setenv=DISPLAY=$DISPLAY"
+        "--setenv=XAUTHORITY=$XAUTHORITY"
+        "--setenv=XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+        "--setenv=DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
+        "--setenv=CROM_STUDIO_TRAY_SOCK=$SOCK_PATH"
+      )
+      [[ -n "${CROM_STUDIO_NODE:-}" ]] && SD_ENV_ARGS+=("--setenv=CROM_STUDIO_NODE=$CROM_STUDIO_NODE")
+      [[ -n "${CROM_STUDIO_CONFIG:-}" ]] && SD_ENV_ARGS+=("--setenv=CROM_STUDIO_CONFIG=$CROM_STUDIO_CONFIG")
+      [[ -n "${PORT:-}" ]] && SD_ENV_ARGS+=("--setenv=PORT=$PORT")
+      [[ -n "${HOST:-}" ]] && SD_ENV_ARGS+=("--setenv=HOST=$HOST")
+
+      if systemd-run --user --collect --quiet "${SD_ENV_ARGS[@]}" \
+        -- /bin/sh -c 'log="$1"; shift; exec "$@" >>"$log" 2>&1 </dev/null' _ "$TRAY_LOG" \
+        "$PYTHON_BIN" "$TRAY_SCRIPT" "${TRAY_ARGS[@]}" 2>>"$TRAY_LOG"; then
+        LAUNCHED=1
+      fi
+    fi
+
+    if [[ "$LAUNCHED" -eq 0 ]]; then
+      if command -v setsid >/dev/null 2>&1; then
+        setsid -f "$PYTHON_BIN" "$TRAY_SCRIPT" "${TRAY_ARGS[@]}" >>"$TRAY_LOG" 2>&1 </dev/null
+      else
+        nohup "$PYTHON_BIN" "$TRAY_SCRIPT" "${TRAY_ARGS[@]}" >>"$TRAY_LOG" 2>&1 </dev/null &
+        disown || true
+      fi
+    fi
+
+    for _ in $(seq 1 25); do
+      if [[ -S "$SOCK_PATH" ]]; then
+        break
+      fi
+      sleep 0.1
+    done
+    echo "Crom YouTube Studio iniciado na bandeja do sistema (log: $TRAY_LOG)."
+    ;;
+esac

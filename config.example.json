@@ -1,0 +1,51 @@
+{
+  "port": 4173,
+  "host": "127.0.0.1",
+  "defaultChannel": "canal-principal",
+  "kdenliveRoot": "./workspaces/youtube-kdenlive",
+  "channels": {
+    "canal-principal": {
+      "name": "Canal Principal",
+      "handle": "@seu_canal",
+      "channelId": "UCXXXXXXXXXXXXXXXXXXXXXX",
+      "url": "https://www.youtube.com/@seu_canal",
+      "status": "ativo",
+      "statusLabel": "Ativo",
+      "subscribers": 0,
+      "totalVideos": 0,
+      "avatar": "",
+      "bio": "Laboratório de construção de software, séries editoriais e bastidores reais.",
+      "workspacePath": "./workspaces/canal-principal",
+      "kdenliveFolder": "videos",
+      "seriesList": [
+        "Imagine",
+        "Pensamentos",
+        "Histórias",
+        "Reavaliar",
+        "Construção Real",
+        "Shorts & Cortes",
+        "Canal & Ops"
+      ]
+    },
+    "canal-secundario": {
+      "name": "Canal Secundário",
+      "handle": "@seu_outro_canal",
+      "channelId": "UCYYYYYYYYYYYYYYYYYYYYYY",
+      "url": "https://www.youtube.com/@seu_outro_canal",
+      "status": "pausado",
+      "statusLabel": "Offline / Pausado",
+      "subscribers": 0,
+      "totalVideos": 0,
+      "avatar": "",
+      "bio": "Ensaios técnicos, curadoria de projetos open source e arquivo editorial.",
+      "workspacePath": "./workspaces/canal-secundario",
+      "kdenliveFolder": "videos",
+      "seriesList": [
+        "Ciência em Artigos",
+        "Projetos do GitHub",
+        "Ensaios & Avulsos",
+        "Canal & Ops"
+      ]
+    }
+  }
+}

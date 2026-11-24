@@ -1,0 +1,13 @@
+# Local machine config and generated caches (never commit personal paths or local caches)
+config.local.json
+data/
+web/data.js
+
+# Logs, runtime state, OS and Python caches
+*.log
+*.pid
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+node_modules/
