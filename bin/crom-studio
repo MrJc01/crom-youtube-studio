@@ -30,6 +30,15 @@ SERVER_SCRIPT="$REPO_ROOT/src/server.mjs"
 SOCK_PATH="${CROM_STUDIO_TRAY_SOCK:-/tmp/crom-youtube-studio-tray.sock}"
 TRAY_LOG="/tmp/crom-youtube-studio-tray.log"
 
+if [[ "${1:-}" == "roteiro" ]]; then
+  shift
+  if [[ -z "$NODE_BIN" ]]; then
+    echo "Erro: binário 'node' não encontrado no PATH." >&2
+    exit 1
+  fi
+  exec "$NODE_BIN" "$REPO_ROOT/src/roteiro-git.mjs" "$@"
+fi
+
 MODE="tray"
 DO_OPEN=0
 NO_OPEN=0
@@ -39,6 +48,7 @@ CANAL=""
 usage() {
   cat <<'EOF'
 Uso: crom-studio [opções]
+     crom-studio roteiro <subcomando> [opções]
 
 Opções:
   --tray            Inicia ou aciona o ícone na bandeja do sistema (padrão)
@@ -52,6 +62,7 @@ Opções:
   --check           Valida dependências GTK/Ayatana e arquivos do tray
   --status          Consulta o status da instância ativa do tray
   --quit            Encerra a instância ativa do tray e o servidor gerenciado
+  roteiro ...       Git de roteiros e versões (log, commit, nova-versao, diff, restaurar, promover)
   -h, --help        Exibe esta ajuda
 EOF
 }

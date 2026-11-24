@@ -15,6 +15,7 @@
       "totalVideos": 0,
       "avatar": "",
       "bio": "Laboratório de construção de software, séries editoriais e bastidores reais.",
+      "bannerEnabled": false,
       "workspacePath": "./workspaces/canal-principal",
       "kdenliveFolder": "videos",
       "seriesList": [
@@ -32,12 +33,13 @@
       "handle": "@seu_outro_canal",
       "channelId": "UCYYYYYYYYYYYYYYYYYYYYYY",
       "url": "https://www.youtube.com/@seu_outro_canal",
-      "status": "pausado",
-      "statusLabel": "Offline / Pausado",
+      "status": "ativo",
+      "statusLabel": "Ativo",
       "subscribers": 0,
       "totalVideos": 0,
       "avatar": "",
       "bio": "Ensaios técnicos, curadoria de projetos open source e arquivo editorial.",
+      "bannerEnabled": false,
       "workspacePath": "./workspaces/canal-secundario",
       "kdenliveFolder": "videos",
       "seriesList": [

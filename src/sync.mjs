@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DATA_DIR, WEB_DIR, loadConfig, getCliArg } from './config.mjs';
+import { getVersioningSummary } from './versioning.mjs';
 
 const IGNORED_DIRS = new Set(['studio', '.git', 'node_modules']);
 
@@ -490,6 +491,7 @@ function indexChannel(channelKey, channelCfg) {
         size: stat.size,
       },
       headings: analysis.headings,
+      versioning: getVersioningSummary(channelCfg.workspacePath, relPath),
       mtime: stat.mtime.toISOString(),
     };
   });
@@ -510,6 +512,26 @@ function indexChannel(channelKey, channelCfg) {
     ...videos.map((v) => v.serie).filter(Boolean),
   ]);
 
+  const rawMergedLinks = {
+    ...(ytCache.channel?.links || {}),
+    ...(channelCfg.links || {}),
+  };
+  const mergedLinks = {};
+  for (const [lk, lv] of Object.entries(rawMergedLinks)) {
+    const val = String(lv || '').trim();
+    if (val) mergedLinks[lk] = val;
+  }
+
+  const channelStatus = channelCfg.status || ytCache.channel?.status || 'ativo';
+  const computedStatusLabel =
+    channelCfg.statusLabel !== undefined && channelCfg.statusLabel !== ''
+      ? channelCfg.statusLabel
+      : channelStatus === 'pausado'
+      ? 'Pausado'
+      : channelStatus === 'oculto'
+      ? ''
+      : ytCache.channel?.statusLabel || 'Ativo';
+
   const mergedChannel = {
     ...(ytCache.channel || {}),
     key: channelKey,
@@ -517,11 +539,8 @@ function indexChannel(channelKey, channelCfg) {
     handle: channelCfg.handle || ytCache.channel?.handle || '',
     id: channelCfg.channelId || ytCache.channel?.id || '',
     url: channelCfg.url || ytCache.channel?.url || '',
-    status: channelCfg.status || ytCache.channel?.status || 'ativo',
-    statusLabel:
-      channelCfg.statusLabel ||
-      ytCache.channel?.statusLabel ||
-      (channelCfg.status === 'pausado' ? 'Offline / Pausado' : 'Ativo'),
+    status: channelStatus,
+    statusLabel: computedStatusLabel,
     subscribers:
       channelCfg.subscribers !== undefined
         ? channelCfg.subscribers
@@ -530,8 +549,15 @@ function indexChannel(channelKey, channelCfg) {
       channelCfg.totalVideos !== null && channelCfg.totalVideos !== undefined
         ? channelCfg.totalVideos
         : Number(ytCache.channel?.totalVideos || videos.length),
-    avatar: channelCfg.avatar || ytCache.channel?.avatar || '',
-    bio: channelCfg.bio || ytCache.channel?.bio || '',
+    avatar: channelCfg.avatar !== undefined ? channelCfg.avatar : (ytCache.channel?.avatar || ''),
+    bio: channelCfg.bio !== undefined ? channelCfg.bio : (ytCache.channel?.bio || ''),
+    bannerEnabled: Boolean(channelCfg.bannerEnabled),
+    bannerBadge: String(channelCfg.bannerBadge || ''),
+    bannerTitle: String(channelCfg.bannerTitle || ''),
+    bannerSubtitle: String(channelCfg.bannerSubtitle || ''),
+    bannerDocPath: String(channelCfg.bannerDocPath || ''),
+    spotlightSeries: Array.isArray(channelCfg.spotlightSeries) ? channelCfg.spotlightSeries : [],
+    links: mergedLinks,
     kdenliveFolder: channelCfg.kdenliveFolder || 'videos',
   };
 
@@ -564,6 +590,13 @@ export function syncWorkspace({ serverMode = false, config: passedConfig = null 
     serverMode,
     defaultChannel: config.defaultChannel,
     channelOrder: config.channelOrder,
+    configMeta: {
+      port: config.port,
+      host: config.host,
+      kdenliveRoot: config.kdenliveRoot,
+      kdenliveRootRaw: config.kdenliveRootRaw || config.kdenliveRoot || '',
+      configFile: path.basename(config.configPath || ''),
+    },
     channels: channelsPayload,
     kdenlive,
   };

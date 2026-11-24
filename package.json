@@ -10,7 +10,8 @@
   "scripts": {
     "sync": "node src/sync.mjs",
     "sync:youtube": "node src/sync.mjs --youtube",
-    "start": "node src/server.mjs"
+    "start": "node src/server.mjs",
+    "roteiro": "node src/roteiro-git.mjs"
   },
   "engines": {
     "node": ">=20.0.0"

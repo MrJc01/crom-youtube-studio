@@ -2,8 +2,29 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { ASSETS_DIR, DATA_DIR, WEB_DIR, loadConfig } from './config.mjs';
+import {
+  ASSETS_DIR,
+  DATA_DIR,
+  WEB_DIR,
+  loadConfig,
+  getEditableConfig,
+  saveConfigUpdates,
+  addChannelToConfig,
+  removeChannelFromConfig,
+} from './config.mjs';
 import { syncWorkspace, syncYouTubeRss, slugify } from './sync.mjs';
+import {
+  getHistory,
+  readRefContent,
+  commitRevision,
+  createVersion,
+  restoreRevision,
+  promoteVersion,
+  deleteVersion,
+  diffTargets,
+  migrateDocHistory,
+  deleteDocHistory,
+} from './versioning.mjs';
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 const PROTECTED_FILES = new Set(['AGENTS.md', 'README.md']);
@@ -214,6 +235,24 @@ function serveFileSafe(res, rootDir, relPath, cacheControl = 'no-cache') {
   fs.createReadStream(realAbs).pipe(res);
 }
 
+function serveSpaHtml(res) {
+  const indexPath = path.join(WEB_DIR, 'index.html');
+  if (!fs.existsSync(indexPath)) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('index.html não encontrado');
+    return;
+  }
+  let html = fs.readFileSync(indexPath, 'utf8');
+  if (!html.includes('<base ')) {
+    html = html.replace('<head>', '<head>\n  <base href="/">');
+  }
+  res.writeHead(200, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-cache',
+  });
+  res.end(html);
+}
+
 function serveStatic(reqPath, res) {
   let cleanPath;
   try {
@@ -232,16 +271,232 @@ function serveStatic(reqPath, res) {
     return serveFileSafe(res, ASSETS_DIR, cleanPath.slice('/assets/'.length));
   }
 
-  if (cleanPath === '/') cleanPath = '/index.html';
-  return serveFileSafe(res, WEB_DIR, cleanPath.slice(1));
+  if (cleanPath === '/' || cleanPath === '/index.html') {
+    return serveSpaHtml(res);
+  }
+
+  // Verifica se corresponde a um arquivo estático real em WEB_DIR (ex.: /styles.css, /app.js, /markdown.js)
+  const webRootReal = fs.realpathSync(WEB_DIR);
+  const relStatic = cleanPath.replace(/^\/+/, '');
+  const segments = relStatic ? relStatic.split('/') : [];
+  if (!segments.some((s) => !s || s === '.' || s === '..' || s.startsWith('.'))) {
+    const candidate = path.resolve(webRootReal, relStatic);
+    if (candidate.startsWith(webRootReal + path.sep) && fs.existsSync(candidate)) {
+      const st = fs.lstatSync(candidate);
+      if (!st.isSymbolicLink() && !st.isDirectory()) {
+        return serveFileSafe(res, WEB_DIR, relStatic);
+      }
+    }
+  }
+
+  // Fallback SPA para URLs amigáveis (ex.: /mrj, /mrj/mapa, /mrj/roteiros/06-series/...)
+  if (!cleanPath.startsWith('/api/')) {
+    return serveSpaHtml(res);
+  }
+
+  res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify({ error: 'Endpoint não encontrado' }));
+}
+
+function createLiveWatchHub(config) {
+  const clients = new Set();
+  const watchers = [];
+  let debounceTimer = null;
+  let suppressFsUntil = 0;
+  let pendingConfig = false;
+  const pendingChannels = new Set();
+  const pendingPaths = new Set();
+
+  function markApiWrite(ms = 450) {
+    suppressFsUntil = Math.max(suppressFsUntil, Date.now() + ms);
+  }
+
+  function broadcast(payload) {
+    if (!clients.size) return;
+    const frame = `event: update\ndata: ${JSON.stringify(payload)}\n\n`;
+    for (const res of clients) {
+      try {
+        res.write(frame);
+      } catch {
+        clients.delete(res);
+      }
+    }
+  }
+
+  function flushFsChanges() {
+    debounceTimer = null;
+    const configChanged = pendingConfig;
+    const changedChannels = Array.from(pendingChannels);
+    const changedPaths = Array.from(pendingPaths).slice(0, 20);
+    pendingConfig = false;
+    pendingChannels.clear();
+    pendingPaths.clear();
+
+    try {
+      if (configChanged && config.configPath && fs.existsSync(config.configPath)) {
+        const reloaded = loadConfig(['--config', config.configPath], { ignoreEnv: true });
+        const keepPort = config.port;
+        const keepHost = config.host;
+        Object.assign(config, reloaded, { port: keepPort, host: keepHost });
+        rebuildWatchers();
+      }
+      syncWorkspace({ serverMode: true, config });
+      broadcast({
+        type: 'change',
+        source: 'fs',
+        reason: configChanged ? 'config' : 'workspace',
+        channels: changedChannels,
+        paths: changedPaths,
+        ts: Date.now(),
+      });
+    } catch {
+      // ignora erro transitório durante gravação parcial em disco
+    }
+  }
+
+  function scheduleFsFlush({ channel = '', filePath = '', isConfig = false } = {}) {
+    if (Date.now() < suppressFsUntil) return;
+    if (isConfig) pendingConfig = true;
+    if (channel) pendingChannels.add(channel);
+    if (filePath) pendingPaths.add(filePath);
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(flushFsChanges, 220);
+  }
+
+  function closeWatchers() {
+    while (watchers.length) {
+      const w = watchers.pop();
+      try {
+        w.close();
+      } catch {
+        // ignora
+      }
+    }
+  }
+
+  function attachWorkspaceWatcher(chKey, wsPath) {
+    if (!wsPath || !fs.existsSync(wsPath)) return;
+    const onFsEvent = (_eventType, filename) => {
+      const rel = String(filename || '').replace(/\\/g, '/');
+      if (!rel) {
+        scheduleFsFlush({ channel: chKey, filePath: '*' });
+        return;
+      }
+      const base = path.basename(rel);
+      if (
+        rel.startsWith('.git/') ||
+        rel.includes('/.git/') ||
+        rel.includes('node_modules/') ||
+        base.endsWith('.swp') ||
+        base.endsWith('.swo') ||
+        base.endsWith('.tmp') ||
+        base.endsWith('.bak') ||
+        base.endsWith('~') ||
+        base.startsWith('.#')
+      ) {
+        return;
+      }
+      const isMd = rel.toLowerCase().endsWith('.md');
+      const isGit = rel === '.roteiro-git' || rel.startsWith('.roteiro-git/');
+      if (!isMd && !isGit && base.includes('.')) return;
+      scheduleFsFlush({ channel: chKey, filePath: rel });
+    };
+
+    try {
+      watchers.push(fs.watch(wsPath, { recursive: true }, onFsEvent));
+    } catch {
+      try {
+        watchers.push(fs.watch(wsPath, {}, onFsEvent));
+      } catch {
+        // fallback silencioso se SO não suportar watch neste diretório
+      }
+    }
+  }
+
+  function rebuildWatchers() {
+    closeWatchers();
+    for (const chKey of config.channelOrder || []) {
+      const ch = config.channels[chKey];
+      if (ch?.workspacePath) attachWorkspaceWatcher(chKey, ch.workspacePath);
+    }
+
+    if (config.configPath) {
+      const cfgDir = path.dirname(config.configPath);
+      const cfgBase = path.basename(config.configPath);
+      if (fs.existsSync(cfgDir)) {
+        try {
+          watchers.push(
+            fs.watch(cfgDir, {}, (_eventType, filename) => {
+              const name = String(filename || '');
+              if (name === cfgBase || name === 'config.local.json') {
+                scheduleFsFlush({ isConfig: true, filePath: name });
+              }
+            })
+          );
+        } catch {
+          // ignora
+        }
+      }
+    }
+  }
+
+  rebuildWatchers();
+
+  const heartbeat = setInterval(() => {
+    for (const res of clients) {
+      try {
+        res.write(': keepalive\n\n');
+      } catch {
+        clients.delete(res);
+      }
+    }
+  }, 25000);
+  if (typeof heartbeat.unref === 'function') heartbeat.unref();
+
+  return {
+    markApiWrite,
+    broadcast,
+    rebuildWatchers,
+    handleSse(req, res) {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      res.write(`event: ready\ndata: ${JSON.stringify({ ok: true, ts: Date.now() })}\n\n`);
+      clients.add(res);
+      req.on('close', () => {
+        clients.delete(res);
+      });
+    },
+    close() {
+      clearInterval(heartbeat);
+      if (debounceTimer) clearTimeout(debounceTimer);
+      closeWatchers();
+      for (const res of clients) {
+        try {
+          res.end();
+        } catch {
+          // ignora
+        }
+      }
+      clients.clear();
+    },
+  };
 }
 
 export function createStudioServer(config) {
-  return http.createServer(async (req, res) => {
+  const watchHub = createLiveWatchHub(config);
+  const server = http.createServer(async (req, res) => {
     const urlObj = new URL(req.url || '/', `http://${config.host}:${config.port}`);
     const pathname = urlObj.pathname;
 
     try {
+      if (req.method === 'GET' && pathname === '/api/events') {
+        return watchHub.handleSse(req, res);
+      }
+
       if (req.method === 'GET' && pathname === '/api/health') {
         const body = JSON.stringify({
           ok: true,
@@ -264,6 +519,59 @@ export function createStudioServer(config) {
         return sendJson(res, 200, state);
       }
 
+      if (req.method === 'GET' && pathname === '/api/config') {
+        return sendJson(res, 200, { ok: true, config: getEditableConfig(config) });
+      }
+
+      if (req.method === 'PUT' && pathname === '/api/config') {
+        const body = await readJsonBody(req);
+        watchHub.markApiWrite();
+        const { restartRequired } = saveConfigUpdates(config, body);
+        watchHub.rebuildWatchers();
+        const state = syncWorkspace({ serverMode: true, config });
+        watchHub.broadcast({ type: 'change', source: 'api', reason: 'config', ts: Date.now() });
+        return sendJson(res, 200, {
+          ok: true,
+          restartRequired,
+          config: getEditableConfig(config),
+          state,
+        });
+      }
+
+      if (req.method === 'POST' && pathname === '/api/config/channels') {
+        const body = await readJsonBody(req);
+        watchHub.markApiWrite();
+        const { channelKey } = addChannelToConfig(config, body);
+        watchHub.rebuildWatchers();
+        const state = syncWorkspace({ serverMode: true, config });
+        watchHub.broadcast({ type: 'change', source: 'api', reason: 'channel-add', channel: channelKey, ts: Date.now() });
+        return sendJson(res, 201, {
+          ok: true,
+          channelKey,
+          config: getEditableConfig(config),
+          state,
+        });
+      }
+
+      if (req.method === 'DELETE' && pathname === '/api/config/channels') {
+        let keyParam = urlObj.searchParams.get('key');
+        if (!keyParam) {
+          const body = await readJsonBody(req).catch(() => ({}));
+          keyParam = body.key || body.channelKey;
+        }
+        watchHub.markApiWrite();
+        const { removedKey } = removeChannelFromConfig(config, keyParam);
+        watchHub.rebuildWatchers();
+        const state = syncWorkspace({ serverMode: true, config });
+        watchHub.broadcast({ type: 'change', source: 'api', reason: 'channel-remove', channel: removedKey, ts: Date.now() });
+        return sendJson(res, 200, {
+          ok: true,
+          removedKey,
+          config: getEditableConfig(config),
+          state,
+        });
+      }
+
       if (req.method === 'POST' && pathname === '/api/doc') {
         const body = await readJsonBody(req);
         const rawChannel = body.channel || urlObj.searchParams.get('channel') || config.defaultChannel;
@@ -276,13 +584,22 @@ export function createStudioServer(config) {
         if (fs.existsSync(target.abs)) {
           return sendJson(res, 409, { error: `Já existe um arquivo em ${target.rel}` });
         }
-        fs.mkdirSync(path.dirname(target.abs), { recursive: true });
-        fs.writeFileSync(target.abs, String(body.content ?? ''), 'utf8');
+        watchHub.markApiWrite();
+        const initialContent = String(body.content ?? '');
+        const verRes = commitRevision(target.workspaceReal, target.rel, {
+          content: initialContent,
+          version: 'principal',
+          message: body.commitMessage || 'Criação do roteiro',
+          author: body.author || 'MrJ',
+          kind: 'init',
+        });
         const state = syncWorkspace({ serverMode: true, config });
+        watchHub.broadcast({ type: 'change', source: 'api', reason: 'doc-create', channel: target.channel, path: target.rel, ts: Date.now() });
         return sendJson(res, 201, {
           ok: true,
           channel: target.channel,
           path: target.rel,
+          revision: verRes.revision,
           state,
         });
       }
@@ -295,6 +612,7 @@ export function createStudioServer(config) {
           return sendJson(res, 404, { error: `Arquivo não encontrado: ${current.rel}` });
         }
 
+        watchHub.markApiWrite();
         let target = current;
         if (body.newPath && body.newPath !== current.rel) {
           if (PROTECTED_FILES.has(current.rel)) {
@@ -308,19 +626,29 @@ export function createStudioServer(config) {
               error: `Já existe um arquivo no destino: ${target.rel}`,
             });
           }
+          fs.mkdirSync(path.dirname(target.abs), { recursive: true });
+          fs.copyFileSync(current.abs, target.abs);
+          fs.unlinkSync(current.abs);
+          migrateDocHistory(current.workspaceReal, current.rel, target.rel);
         }
 
-        fs.mkdirSync(path.dirname(target.abs), { recursive: true });
-        fs.writeFileSync(target.abs, String(body.content ?? ''), 'utf8');
-        if (target.abs !== current.abs && fs.existsSync(current.abs)) {
-          fs.unlinkSync(current.abs);
-        }
+        const verRes = commitRevision(target.workspaceReal, target.rel, {
+          content: String(body.content ?? ''),
+          version: body.version || 'principal',
+          message: body.commitMessage || (target.rel !== current.rel ? `Movido para ${target.rel}` : 'Edição no Studio'),
+          author: body.author || 'MrJ',
+          kind: 'commit',
+        });
 
         const state = syncWorkspace({ serverMode: true, config });
+        watchHub.broadcast({ type: 'change', source: 'api', reason: 'doc-save', channel: target.channel, path: target.rel, ts: Date.now() });
         return sendJson(res, 200, {
           ok: true,
           channel: target.channel,
           path: target.rel,
+          version: verRes.version,
+          revision: verRes.revision,
+          history: verRes.history,
           state,
         });
       }
@@ -343,8 +671,11 @@ export function createStudioServer(config) {
           return sendJson(res, 404, { error: `Arquivo não encontrado: ${target.rel}` });
         }
 
+        watchHub.markApiWrite();
         fs.unlinkSync(target.abs);
+        deleteDocHistory(target.workspaceReal, target.rel);
         const state = syncWorkspace({ serverMode: true, config });
+        watchHub.broadcast({ type: 'change', source: 'api', reason: 'doc-delete', channel: target.channel, path: target.rel, ts: Date.now() });
         return sendJson(res, 200, {
           ok: true,
           channel: target.channel,
@@ -353,14 +684,124 @@ export function createStudioServer(config) {
         });
       }
 
+      if (req.method === 'GET' && pathname === '/api/versions') {
+        const rawChannel = urlObj.searchParams.get('channel') || config.defaultChannel;
+        const relPath = urlObj.searchParams.get('path');
+        const target = resolveSafeMdPath(config, rawChannel, relPath);
+        const history = getHistory(target.workspaceReal, target.rel);
+        return sendJson(res, 200, { ok: true, channel: target.channel, ...history });
+      }
+
+      if (req.method === 'GET' && pathname === '/api/versions/content') {
+        const rawChannel = urlObj.searchParams.get('channel') || config.defaultChannel;
+        const relPath = urlObj.searchParams.get('path');
+        const ref = urlObj.searchParams.get('ref') || 'ver:principal';
+        const target = resolveSafeMdPath(config, rawChannel, relPath);
+        const data = readRefContent(target.workspaceReal, target.rel, ref);
+        return sendJson(res, 200, { ok: true, channel: target.channel, path: target.rel, ...data });
+      }
+
+      if (req.method === 'GET' && pathname === '/api/versions/diff') {
+        const rawChannel = urlObj.searchParams.get('channel') || config.defaultChannel;
+        const relPath = urlObj.searchParams.get('path');
+        const from = urlObj.searchParams.get('from') || 'ver:principal';
+        const to = urlObj.searchParams.get('to') || 'disk';
+        const target = resolveSafeMdPath(config, rawChannel, relPath);
+        const diff = diffTargets(target.workspaceReal, target.rel, { from, to });
+        return sendJson(res, 200, { ok: true, channel: target.channel, path: target.rel, ...diff });
+      }
+
+      if (req.method === 'POST' && pathname === '/api/versions/commit') {
+        const body = await readJsonBody(req);
+        const target = resolveSafeMdPath(config, body.channel || config.defaultChannel, body.path);
+        watchHub.markApiWrite();
+        const result = commitRevision(target.workspaceReal, target.rel, {
+          content: String(body.content ?? ''),
+          version: body.version || 'principal',
+          message: body.message || 'Nova revisão',
+          author: body.author || 'MrJ',
+          kind: 'commit',
+        });
+        const state = syncWorkspace({ serverMode: true, config });
+        watchHub.broadcast({ type: 'change', source: 'api', reason: 'version-commit', channel: target.channel, path: target.rel, ts: Date.now() });
+        return sendJson(res, 200, { ...result, channel: target.channel, path: target.rel, state });
+      }
+
+      if (req.method === 'POST' && pathname === '/api/versions/create') {
+        const body = await readJsonBody(req);
+        const target = resolveSafeMdPath(config, body.channel || config.defaultChannel, body.path);
+        watchHub.markApiWrite();
+        const result = createVersion(target.workspaceReal, target.rel, {
+          name: body.name,
+          description: body.description || '',
+          fromVersion: body.fromVersion || 'principal',
+          fromRev: body.fromRev || null,
+          content: body.content !== undefined ? body.content : null,
+          author: body.author || 'MrJ',
+          message: body.message || '',
+        });
+        const state = syncWorkspace({ serverMode: true, config });
+        watchHub.broadcast({ type: 'change', source: 'api', reason: 'version-create', channel: target.channel, path: target.rel, ts: Date.now() });
+        return sendJson(res, 201, { ...result, channel: target.channel, path: target.rel, state });
+      }
+
+      if (req.method === 'POST' && pathname === '/api/versions/restore') {
+        const body = await readJsonBody(req);
+        const target = resolveSafeMdPath(config, body.channel || config.defaultChannel, body.path);
+        watchHub.markApiWrite();
+        const result = restoreRevision(target.workspaceReal, target.rel, {
+          revId: body.revId,
+          targetVersion: body.targetVersion || 'principal',
+          author: body.author || 'MrJ',
+          message: body.message || '',
+        });
+        const state = syncWorkspace({ serverMode: true, config });
+        watchHub.broadcast({ type: 'change', source: 'api', reason: 'version-restore', channel: target.channel, path: target.rel, ts: Date.now() });
+        return sendJson(res, 200, { ...result, channel: target.channel, path: target.rel, state });
+      }
+
+      if (req.method === 'POST' && pathname === '/api/versions/promote') {
+        const body = await readJsonBody(req);
+        const target = resolveSafeMdPath(config, body.channel || config.defaultChannel, body.path);
+        watchHub.markApiWrite();
+        const result = promoteVersion(target.workspaceReal, target.rel, {
+          versionName: body.versionName,
+          author: body.author || 'MrJ',
+          message: body.message || '',
+        });
+        const state = syncWorkspace({ serverMode: true, config });
+        watchHub.broadcast({ type: 'change', source: 'api', reason: 'version-promote', channel: target.channel, path: target.rel, ts: Date.now() });
+        return sendJson(res, 200, { ...result, channel: target.channel, path: target.rel, state });
+      }
+
+      if (req.method === 'DELETE' && pathname === '/api/versions') {
+        let targetParam = urlObj.searchParams.get('path');
+        let rawChannel = urlObj.searchParams.get('channel');
+        let versionName = urlObj.searchParams.get('versionName');
+        if (!targetParam || !rawChannel || !versionName) {
+          const body = await readJsonBody(req).catch(() => ({}));
+          if (!targetParam) targetParam = body.path;
+          if (!rawChannel) rawChannel = body.channel;
+          if (!versionName) versionName = body.versionName;
+        }
+        const target = resolveSafeMdPath(config, rawChannel || config.defaultChannel, targetParam);
+        watchHub.markApiWrite();
+        const result = deleteVersion(target.workspaceReal, target.rel, { versionName });
+        const state = syncWorkspace({ serverMode: true, config });
+        watchHub.broadcast({ type: 'change', source: 'api', reason: 'version-delete', channel: target.channel, path: target.rel, ts: Date.now() });
+        return sendJson(res, 200, { ...result, channel: target.channel, path: target.rel, state });
+      }
+
       if (req.method === 'POST' && pathname === '/api/sync-youtube') {
         const body = await readJsonBody(req).catch(() => ({}));
         const targetChannel = body.channel || urlObj.searchParams.get('channel') || 'all';
+        watchHub.markApiWrite(900);
         const result = await syncYouTubeRss({
           serverMode: true,
           channel: targetChannel,
           config,
         });
+        watchHub.broadcast({ type: 'change', source: 'api', reason: 'sync-youtube', channel: targetChannel, ts: Date.now() });
         return sendJson(res, 200, result);
       }
 
@@ -374,6 +815,12 @@ export function createStudioServer(config) {
       sendJson(res, status, { error: err.message || 'Erro interno no servidor' });
     }
   });
+
+  server.on('close', () => {
+    watchHub.close();
+  });
+
+  return server;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

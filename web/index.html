@@ -28,15 +28,13 @@
       <aside class="sidebar" aria-label="Navegação principal">
         <div class="sidebar-top">
           <button class="brand-btn" id="brandBtn" title="Crom YouTube Studio — Ir para Visão Geral">
-            <img src="../assets/crom-logo.png" alt="Crom Studio" class="brand-logo-img" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+            <img src="assets/crom-logo.png" alt="Crom Studio" class="brand-logo-img" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
             <svg width="24" height="22" viewBox="0 0 28 22" fill="none" aria-hidden="true" style="display:none;">
               <path d="M2.5 18.5V3.5L9.5 13L16.5 3.5V18.5" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
               <path d="M21 4V14.5C21 17 19.3 18.5 16.8 18.5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
               <circle cx="24.5" cy="4.5" r="2.2" fill="var(--accent)"/>
             </svg>
           </button>
-
-          <div class="sidebar-channels" id="sidebarChannelSwitcher" aria-label="Trocar canal em 1 clique"></div>
         </div>
 
         <nav class="side-nav" id="sideNav">
@@ -47,6 +45,10 @@
           <button class="nav-item" data-view="scripts" title="Roteiros & Leitor (.md)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/></svg>
             <span class="nav-badge" id="navDocsCount">0</span>
+          </button>
+
+          <button class="nav-item" data-view="map" title="Mapa de Roteiros (cores por status)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/><line x1="9" y1="3" x2="9" y2="18"/><line x1="15" y1="6" x2="15" y2="21"/></svg>
           </button>
 
           <button class="nav-item" data-view="pipeline" title="Pipeline Kanban">
@@ -68,15 +70,17 @@
           <button class="nav-item" data-view="agent" title="Central do Agente & Arquivos">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 4.8L19 10l-4.8 2.2L12 17l-2.2-4.8L5 10l4.8-2.2z"/><path d="M5 19h14"/></svg>
           </button>
+
+          <button class="nav-item" data-view="settings" title="Configurações do Workspace">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
         </nav>
 
         <div class="sidebar-footer">
-          <button class="icon-circle-btn" id="colorToggleBtn" title="Controle de Cores Dinâmicas">
-            <span class="color-dot-live"></span>
-          </button>
-          <button class="avatar-btn" id="channelAvatarBtn" title="Ver Catálogo do Canal">
+          <button class="avatar-btn ws-trigger-btn" id="channelAvatarBtn" title="Workspaces: trocar ou criar novo" aria-haspopup="true" aria-expanded="false">
             <img id="channelAvatarImg" alt="Avatar do canal" referrerpolicy="no-referrer">
             <span class="avatar-fallback" id="channelAvatarFallback">MJ</span>
+            <span class="ws-trigger-dot" id="channelAvatarDot"></span>
           </button>
         </div>
       </aside>
@@ -86,6 +90,7 @@
         <header class="topbar">
           <div class="topbar-left">
             <h1 class="page-title" id="pageTitle">Visão Geral</h1>
+            <span class="topbar-channel-chip" id="topbarChannelChip"></span>
             <div class="channel-switcher" id="headerChannelSwitcher" aria-label="Alternar workspace de canal"></div>
           </div>
 
@@ -111,30 +116,10 @@
                 <kbd>Ctrl K</kbd>
               </button>
 
-              <div class="color-popover-anchor">
-                <button class="pill-btn color-pill" id="colorPillBtn" title="Modo de cor dinâmico">
-                  <span class="color-swatch"></span>
-                  <span id="colorPillLabel">Crom Magenta</span>
-                </button>
-                <div class="popover-menu hidden" id="colorMenu">
-                  <div class="popover-head">
-                    <span>Fluxo de Cores</span>
-                    <label class="switch-inline">
-                      <input type="checkbox" id="dynamicFlowToggle" checked>
-                      <span>Dinâmico</span>
-                    </label>
-                  </div>
-                  <div class="speed-row">
-                    <span>Velocidade:</span>
-                    <div class="seg-mini" id="flowSpeedGroup">
-                      <button data-speed="slow">Ultra Suave</button>
-                      <button data-speed="medium" class="active">Suave</button>
-                      <button data-speed="fast">Vivo</button>
-                    </div>
-                  </div>
-                  <div class="palette-list" id="paletteList"></div>
-                </div>
-              </div>
+              <button class="pill-btn color-pill" id="colorPillBtn" title="Modo de cor dinâmico">
+                <span class="color-swatch"></span>
+                <span id="colorPillLabel">Crom Magenta</span>
+              </button>
 
               <button class="pill-btn mode-pill" id="connectionModeBtn" title="Status de persistência dos arquivos">
                 <span class="status-dot"></span>
@@ -154,10 +139,95 @@
     </div>
   </div>
 
-  <!-- Botão Flutuante + (FAB) -->
-  <button class="fab-add" id="fabNewBtn" title="Novo Roteiro, Série, Short ou Ideia (N)">
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-  </button>
+  <!-- Dropdown de Workspaces (canto inferior esquerdo) -->
+  <div class="workspace-popover hidden" id="workspaceMenu" role="menu" aria-label="Workspaces configurados">
+    <div class="ws-pop-head">
+      <span>Workspaces / Canais</span>
+    </div>
+    <div class="ws-pop-list" id="workspaceMenuList"></div>
+    <div class="ws-pop-footer">
+      <button type="button" class="ws-pop-action is-primary" id="wsMenuCreateBtn">+ Criar Novo Workspace</button>
+      <button type="button" class="ws-pop-action" id="wsMenuSettingsBtn">⚙ Configurar Workspaces</button>
+    </div>
+  </div>
+
+  <!-- Popover de Cores (ancorado ao botão clicado, nunca recortado) -->
+  <div class="popover-menu hidden" id="colorMenu">
+    <div class="popover-head">
+      <span>Fluxo de Cores</span>
+      <label class="switch-inline">
+        <input type="checkbox" id="dynamicFlowToggle" checked>
+        <span>Dinâmico</span>
+      </label>
+    </div>
+    <div class="speed-row">
+      <span>Velocidade:</span>
+      <div class="seg-mini" id="flowSpeedGroup">
+        <button data-speed="slow">Ultra Suave</button>
+        <button data-speed="medium" class="active">Suave</button>
+        <button data-speed="fast">Vivo</button>
+      </div>
+    </div>
+    <div class="palette-list" id="paletteList"></div>
+  </div>
+
+  <!-- Ações Flutuantes no Canto Inferior Direito (+ Speed-Dial & Cor) -->
+  <div class="fab-cluster" id="fabCluster">
+    <div class="fab-menu hidden" id="fabMenu" role="menu" aria-label="Ações rápidas de criação">
+      <button type="button" class="fab-menu-item" data-fab-action="roteiro">
+        <span class="fab-menu-icon">📝</span>
+        <span class="fab-menu-text">
+          <strong>Novo Roteiro / Episódio</strong>
+          <small>Criar arquivo em série ou rascunho</small>
+        </span>
+      </button>
+      <button type="button" class="fab-menu-item" data-fab-action="short">
+        <span class="fab-menu-icon">⚡</span>
+        <span class="fab-menu-text">
+          <strong>Novo Short (35–55s)</strong>
+          <small>Roteiro vertical em 03-shorts/</small>
+        </span>
+      </button>
+      <button type="button" class="fab-menu-item" data-fab-action="ideia">
+        <span class="fab-menu-icon">💡</span>
+        <span class="fab-menu-text">
+          <strong>Nova Ideia</strong>
+          <small>Registrar pauta em 01-ideias/</small>
+        </span>
+      </button>
+      <button type="button" class="fab-menu-item hidden" id="fabVersionActionBtn" data-fab-action="version">
+        <span class="fab-menu-icon">⎇</span>
+        <span class="fab-menu-text">
+          <strong>Nova Versão deste Roteiro</strong>
+          <small>Variante alternativa sem alterar principal</small>
+        </span>
+      </button>
+      <div class="fab-menu-divider"></div>
+      <button type="button" class="fab-menu-item" data-fab-action="workspace">
+        <span class="fab-menu-icon">＋</span>
+        <span class="fab-menu-text">
+          <strong>Novo Workspace / Canal</strong>
+          <small>Adicionar pasta e canal ao Studio</small>
+        </span>
+      </button>
+      <button type="button" class="fab-menu-item" data-fab-action="settings">
+        <span class="fab-menu-icon">⚙</span>
+        <span class="fab-menu-text">
+          <strong>Configurações</strong>
+          <small>Ajustar canal, banners e caminhos</small>
+        </span>
+      </button>
+    </div>
+
+    <div class="fab-row">
+      <button type="button" class="fab-color-btn" id="colorToggleBtn" title="Alternar cor / tema (Canto Direito)">
+        <span class="color-dot-live"></span>
+      </button>
+      <button type="button" class="fab-add" id="fabNewBtn" title="Criar novo roteiro, versão ou workspace" aria-haspopup="true" aria-expanded="false">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+    </div>
+  </div>
 
   <!-- Modal: Novo Documento -->
   <div class="modal-backdrop hidden" id="newDocModal">
@@ -212,6 +282,87 @@
         <div class="modal-actions">
           <button type="button" class="btn-ghost" data-close-modal="newDocModal">Cancelar</button>
           <button type="submit" class="btn-primary">Criar & Abrir no Leitor</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Nova Versão Alternativa (Dinâmica 2) -->
+  <div class="modal-backdrop hidden" id="newVersionModal">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="newVersionModalTitle">
+      <div class="modal-head">
+        <h2 id="newVersionModalTitle">Criar Nova Versão do Roteiro</h2>
+        <button class="icon-close" data-close-modal="newVersionModal">✕</button>
+      </div>
+      <form id="newVersionForm" class="modal-form">
+        <p style="margin:0; font-size:12.5px; color:var(--text-2);">
+          Cria uma variante independente para testar outro gancho, tom ou duração sem alterar o arquivo principal.
+        </p>
+        <div class="form-row-2">
+          <label>
+            <span>Nome da versão (slug)</span>
+            <input type="text" id="newVerName" placeholder="Ex.: v2-enxuta ou gancho-direto" required>
+          </label>
+          <label>
+            <span>Copiar conteúdo de</span>
+            <select id="newVerFrom"></select>
+          </label>
+        </div>
+        <label>
+          <span>Objetivo / o que muda nessa versão</span>
+          <input type="text" id="newVerDesc" placeholder="Ex.: Versão mais curta para retenção alta (8 min)">
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" data-close-modal="newVersionModal">Cancelar</button>
+          <button type="submit" class="btn-primary">Criar Versão</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Novo Workspace / Canal -->
+  <div class="modal-backdrop hidden" id="newWorkspaceModal">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="newWorkspaceModalTitle">
+      <div class="modal-head">
+        <h2 id="newWorkspaceModalTitle">Adicionar Workspace / Canal</h2>
+        <button class="icon-close" data-close-modal="newWorkspaceModal">✕</button>
+      </div>
+      <form id="newWorkspaceForm" class="modal-form">
+        <div class="form-row-2">
+          <label>
+            <span>Chave na URL (slug)</span>
+            <input type="text" id="newWsKey" placeholder="Ex.: laboratorio" required pattern="[a-z0-9][a-z0-9_-]*">
+          </label>
+          <label>
+            <span>Nome de exibição</span>
+            <input type="text" id="newWsName" placeholder="Ex.: Laboratório" required>
+          </label>
+        </div>
+        <div class="form-row-2">
+          <label>
+            <span>Handle (@canal)</span>
+            <input type="text" id="newWsHandle" placeholder="Ex.: @meu_canal">
+          </label>
+          <label>
+            <span>Subpasta no Kdenlive</span>
+            <input type="text" id="newWsKdenliveFolder" placeholder="Ex.: videos/laboratorio">
+          </label>
+        </div>
+        <label>
+          <span>Caminho da pasta local do workspace</span>
+          <input type="text" id="newWsPath" placeholder="Ex.: ~/Documentos/Youtube/MeuCanal" required>
+        </label>
+        <label>
+          <span>Séries iniciais (separadas por vírgula)</span>
+          <input type="text" id="newWsSeries" value="Geral, Shorts & Cortes, Canal & Ops">
+        </label>
+        <label class="switch-inline" style="flex-direction:row; font-size:12.5px; color:var(--text-1); padding:4px 0;">
+          <input type="checkbox" id="newWsCreateFolder" checked>
+          <span>Criar pasta e estrutura padrão automaticamente (00-canal, 01-ideias, 02-roteiros, 03-shorts, README.md)</span>
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" data-close-modal="newWorkspaceModal">Cancelar</button>
+          <button type="submit" class="btn-primary">Criar & Abrir Workspace</button>
         </div>
       </form>
     </div>

@@ -28,8 +28,6 @@
     'Ensaios & Avulsos': { short: 'Ensaio', icon: '◆', color: '#f472b6' },
   };
 
-  const MRJ_SPOTLIGHT_SERIES = ['Imagine', 'Pensamentos', 'Histórias', 'Reavaliar', 'Crom'];
-
   const KANBAN_COLS = [
     { key: 'ideia', label: 'Ideias' },
     { key: 'pesquisa', label: 'Pesquisa' },
@@ -42,11 +40,63 @@
   const VIEW_TITLES = {
     dashboard: 'Visão Geral',
     scripts: 'Roteiros & Leitor',
+    map: 'Mapa de Roteiros',
     pipeline: 'Pipeline Kanban',
     ideas: 'Ideias, Séries & GitHub',
     catalog: 'Catálogo YouTube',
     production: 'Produção & Kdenlive',
     agent: 'Central do Agente',
+    settings: 'Configurações do Workspace',
+  };
+
+  const VIEW_TO_SLUG = {
+    dashboard: 'visao-geral',
+    scripts: 'roteiros',
+    map: 'mapa',
+    pipeline: 'pipeline',
+    ideas: 'ideias',
+    catalog: 'catalogo',
+    production: 'producao',
+    agent: 'agente',
+    settings: 'configuracoes',
+  };
+
+  const SLUG_TO_VIEW = {
+    'visao-geral': 'dashboard',
+    dashboard: 'dashboard',
+    roteiros: 'scripts',
+    scripts: 'scripts',
+    leitor: 'scripts',
+    mapa: 'map',
+    map: 'map',
+    pipeline: 'pipeline',
+    kanban: 'pipeline',
+    ideias: 'ideas',
+    ideas: 'ideas',
+    series: 'ideas',
+    catalogo: 'catalog',
+    catalog: 'catalog',
+    youtube: 'catalog',
+    producao: 'production',
+    production: 'production',
+    kdenlive: 'production',
+    agente: 'agent',
+    agent: 'agent',
+    configuracoes: 'settings',
+    settings: 'settings',
+    config: 'settings',
+  };
+
+  const STATUS_VISUAL = {
+    publicado: { label: 'Publicado', color: '#22c55e', bg: 'rgba(34, 197, 94, 0.11)', border: 'rgba(34, 197, 94, 0.34)' },
+    gravando: { label: 'Gravando', color: '#f43f5e', bg: 'rgba(244, 63, 94, 0.12)', border: 'rgba(244, 63, 94, 0.38)' },
+    edicao: { label: 'Edição', color: '#f59e0b', bg: 'rgba(245, 185, 66, 0.12)', border: 'rgba(245, 185, 66, 0.36)' },
+    roteiro: { label: 'Roteiro', color: '#8b5cf6', bg: 'rgba(139, 92, 246, 0.12)', border: 'rgba(139, 92, 246, 0.36)' },
+    pesquisa: { label: 'Pesquisa', color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.11)', border: 'rgba(56, 189, 248, 0.32)' },
+    ideia: { label: 'Ideia', color: '#94a3b8', bg: 'rgba(148, 163, 184, 0.08)', border: 'rgba(148, 163, 184, 0.24)' },
+    referencia: { label: 'Referência', color: '#64748b', bg: 'rgba(100, 116, 139, 0.08)', border: 'rgba(100, 116, 139, 0.22)' },
+    template: { label: 'Template', color: '#c084fc', bg: 'rgba(192, 132, 252, 0.08)', border: 'rgba(192, 132, 252, 0.24)' },
+    arquivado: { label: 'Arquivado', color: '#475569', bg: 'rgba(71, 85, 105, 0.08)', border: 'rgba(71, 85, 105, 0.22)' },
   };
 
   const STORAGE_KEY_PREFS = 'crom_studio_prefs_v1';
@@ -59,9 +109,36 @@
     dirHandle: null,
     view: 'dashboard',
     selectedDocPath: null,
-    docMode: 'read',
+    docMode: 'read', // 'read' | 'edit' | 'prompter' | 'history'
     dirtyBody: null,
     dirtyMeta: null,
+    hasUnsavedEdits: false,
+    liveConnected: false,
+    activeVersion: 'principal',
+    versionHistory: null,
+    versionLoading: false,
+    versionError: null,
+    versionFetchedKey: '',
+    diffDocPath: '',
+    diffFromRef: null,
+    diffToRef: null,
+    diffResult: null,
+    selectedRevPreview: null,
+    revPreviewContent: null,
+    commitMessageDraft: '',
+    settingsChannelKey: null,
+    settingsConfig: null,
+    settingsLoading: false,
+    settingsError: null,
+    focusMode: false,
+    scriptsListCollapsed: false,
+    inspectorCollapsed: false,
+    editorSplit: false,
+    readerFontSize: 16,
+    mapGroupBy: 'serie',
+    mapStatusFilter: 'all',
+    mapSearch: '',
+    mapHideMeta: true,
     chartMode: 'views',
     chartHoverIdx: null,
     selectorTab: 'multi',
@@ -103,6 +180,9 @@
       const saved = loadJsonStorage(STORAGE_KEY_PREFS, {});
       if (saved.color) {
         state.color = { ...state.color, ...saved.color };
+      }
+      if (saved.readerFontSize) {
+        state.readerFontSize = Math.min(24, Math.max(13, Number(saved.readerFontSize)));
       }
       const reduced = global.matchMedia && global.matchMedia('(prefers-reduced-motion: reduce)').matches;
       if (reduced && saved.color === undefined) {
@@ -424,25 +504,136 @@
     return payload;
   }
 
-  function resolveInitialChannel(data) {
+  function findDocMatchInChannel(chData, rawDocSlug) {
+    if (!rawDocSlug || !chData?.docs?.length) return null;
+    const cleaned = decodeURIComponent(String(rawDocSlug)).replace(/^\/+|\/+$/g, '');
+    const withMd = cleaned.toLowerCase().endsWith('.md') ? cleaned : `${cleaned}.md`;
+    return (
+      chData.docs.find((d) => d.path === cleaned || d.path === withMd) ||
+      chData.docs.find((d) => d.path.toLowerCase() === withMd.toLowerCase()) ||
+      chData.docs.find((d) => d.meta.id === cleaned || d.filename.replace(/\.md$/i, '') === cleaned) ||
+      null
+    );
+  }
+
+  function parseRouteFromLocation(data) {
     const channels = data.channels || {};
     const params = new URLSearchParams(global.location.search);
     const paramCanal = (params.get('canal') || params.get('channel') || '').trim().toLowerCase();
-    if (paramCanal && channels[paramCanal]) return paramCanal;
 
-    const saved = loadJsonStorage(STORAGE_KEY_PREFS, {});
-    if (saved.activeChannel && channels[saved.activeChannel]) {
-      return saved.activeChannel;
+    let rawSegs = [];
+    if (global.location.protocol.startsWith('http')) {
+      rawSegs = global.location.pathname.split('/').filter(Boolean).map((s) => decodeURIComponent(s));
+    } else if (global.location.hash && global.location.hash.startsWith('#/')) {
+      rawSegs = global.location.hash.slice(2).split('/').filter(Boolean).map((s) => decodeURIComponent(s));
     }
 
-    if (data.defaultChannel && channels[data.defaultChannel]) return data.defaultChannel;
-    return Object.keys(channels)[0] || 'mrj';
+    let channelKey = null;
+    if (rawSegs.length > 0 && channels[rawSegs[0].toLowerCase()]) {
+      channelKey = rawSegs[0].toLowerCase();
+      rawSegs = rawSegs.slice(1);
+    } else if (paramCanal && channels[paramCanal]) {
+      channelKey = paramCanal;
+    } else {
+      const saved = loadJsonStorage(STORAGE_KEY_PREFS, {});
+      if (saved.activeChannel && channels[saved.activeChannel]) channelKey = saved.activeChannel;
+      else if (data.defaultChannel && channels[data.defaultChannel]) channelKey = data.defaultChannel;
+      else channelKey = Object.keys(channels)[0] || 'mrj';
+    }
+
+    let view = 'dashboard';
+    let docPath = null;
+    if (rawSegs.length > 0) {
+      const viewSlug = rawSegs[0].toLowerCase();
+      if (SLUG_TO_VIEW[viewSlug]) {
+        view = SLUG_TO_VIEW[viewSlug];
+        if (view === 'scripts' && rawSegs.length > 1) {
+          const matched = findDocMatchInChannel(channels[channelKey], rawSegs.slice(1).join('/'));
+          if (matched) docPath = matched.path;
+        }
+      }
+    }
+
+    const modoParam = (params.get('modo') || '').toLowerCase();
+    const modoMap = { ler: 'read', read: 'read', editar: 'edit', edit: 'edit', teleprompter: 'prompter', prompter: 'prompter', historico: 'history', history: 'history' };
+    const docMode = modoMap[modoParam] || null;
+    const verParam = params.get('versao') || null;
+    const focusParam = params.get('foco') === '1';
+
+    return { channelKey, view, docPath, docMode, verParam, focusMode: focusParam };
+  }
+
+  function buildFriendlyUrl(channelKey = state.activeChannel, view = state.view, docPath = state.selectedDocPath) {
+    const ch = channelKey || 'mrj';
+    const viewSlug = VIEW_TO_SLUG[view] || 'visao-geral';
+    let routePath = view === 'dashboard' ? `/${ch}` : `/${ch}/${viewSlug}`;
+    if (view === 'scripts' && docPath) {
+      routePath += `/${docPath.split('/').map(encodeURIComponent).join('/')}`;
+    }
+
+    const qs = new URLSearchParams();
+    if (view === 'scripts') {
+      const modeNames = { read: 'ler', edit: 'editar', prompter: 'teleprompter', history: 'historico' };
+      if (state.docMode && state.docMode !== 'read') qs.set('modo', modeNames[state.docMode] || state.docMode);
+      if (state.activeVersion && state.activeVersion !== 'principal') qs.set('versao', state.activeVersion);
+      if (state.focusMode) qs.set('foco', '1');
+    }
+    const queryStr = qs.toString() ? `?${qs.toString()}` : '';
+
+    if (global.location.protocol.startsWith('http')) {
+      return `${routePath}${queryStr}`;
+    }
+    return `#${routePath}${queryStr}`;
+  }
+
+  function syncBrowserUrl({ replace = false } = {}) {
+    try {
+      const target = buildFriendlyUrl();
+      if (global.location.protocol.startsWith('http')) {
+        if (global.location.pathname + global.location.search === target) return;
+        if (replace) global.history.replaceState(null, '', target);
+        else global.history.pushState(null, '', target);
+      } else {
+        if (global.location.hash !== target) {
+          global.history.replaceState(null, '', target);
+        }
+      }
+    } catch {
+      // ignora em contextos restritos
+    }
+  }
+
+  function resolveInitialChannel(data) {
+    return parseRouteFromLocation(data).channelKey;
   }
 
   function initSelectedSeriesForChannel(chData) {
     const allSeries = getChannelSeriesList(chData);
     const editorial = allSeries.filter((s) => s !== 'Canal & Ops');
     state.selectedSeries = new Set(editorial.length ? editorial : allSeries);
+  }
+
+  function applyRouteSnapshot(route) {
+    state.activeChannel = route.channelKey;
+    state.view = route.view || 'dashboard';
+    state.selectedDocPath = route.docPath || null;
+    state.docMode = route.docMode || 'read';
+    state.activeVersion = route.verParam || 'principal';
+    state.focusMode = Boolean(route.focusMode && state.view === 'scripts');
+    state.dirtyBody = null;
+    state.dirtyMeta = null;
+    state.hasUnsavedEdits = false;
+    state.versionHistory = null;
+    state.versionFetchedKey = '';
+    state.diffDocPath = '';
+    state.diffFromRef = null;
+    state.diffToRef = null;
+    state.diffResult = null;
+    state.selectedRevPreview = null;
+    state.revPreviewContent = null;
+    state.commitMessageDraft = '';
+    if (!state.settingsChannelKey) state.settingsChannelKey = route.channelKey;
+    initSelectedSeriesForChannel(getActiveChannelData());
   }
 
   async function loadInitialData() {
@@ -453,8 +644,8 @@
           const json = await res.json();
           state.serverMode = true;
           state.data = normalizePayload(json);
-          state.activeChannel = resolveInitialChannel(state.data);
-          initSelectedSeriesForChannel(getActiveChannelData());
+          applyRouteSnapshot(parseRouteFromLocation(state.data));
+          syncBrowserUrl({ replace: true });
           return;
         }
       } catch {
@@ -466,8 +657,8 @@
     const rawGlobal = global.CROM_STUDIO_DATA || global.MRJ_STUDIO_DATA || {};
     const normalized = normalizePayload(structuredClone(rawGlobal));
     state.data = applyLocalDraftOverrides(normalized);
-    state.activeChannel = resolveInitialChannel(state.data);
-    initSelectedSeriesForChannel(getActiveChannelData());
+    applyRouteSnapshot(parseRouteFromLocation(state.data));
+    syncBrowserUrl({ replace: true });
   }
 
   function switchChannel(channelKey, { preserveView = true } = {}) {
@@ -476,8 +667,21 @@
 
     state.activeChannel = channelKey;
     state.selectedDocPath = null;
+    state.activeVersion = 'principal';
+    state.versionHistory = null;
+    state.versionFetchedKey = '';
+    state.diffDocPath = '';
+    state.diffFromRef = null;
+    state.diffToRef = null;
+    state.diffResult = null;
+    state.selectedRevPreview = null;
+    state.revPreviewContent = null;
+    state.commitMessageDraft = '';
     state.dirtyBody = null;
     state.dirtyMeta = null;
+    state.hasUnsavedEdits = false;
+    state.settingsChannelKey = channelKey;
+    state.focusMode = false;
     state.historyStatusFilter = 'all';
     state.historyFolderFilter = 'all';
     state.scriptsSearch = '';
@@ -494,14 +698,7 @@
     prefs.activeChannel = channelKey;
     saveJsonStorage(STORAGE_KEY_PREFS, prefs);
 
-    try {
-      const url = new URL(global.location.href);
-      url.searchParams.set('canal', channelKey);
-      global.history.replaceState(null, '', url.toString());
-    } catch {
-      // Ignora caso file:// bloqueie replaceState em algum ambiente
-    }
-
+    syncBrowserUrl({ replace: false });
     updateHeaderChrome();
     renderCurrentView();
     const ch = getActiveChannelData().channel;
@@ -511,18 +708,27 @@
   /* =========================================================
      PERSISTÊNCIA HÍBRIDA MULTI-CANAL
   ========================================================= */
-  async function persistSaveDoc(docPath, fullRaw, newPath = null) {
+  async function persistSaveDoc(docPath, fullRaw, newPath = null, { version = 'principal', commitMessage = '' } = {}) {
     const channelKey = state.activeChannel;
     if (state.serverMode) {
       const res = await fetch('/api/doc', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channel: channelKey, path: docPath, content: fullRaw, newPath }),
+        body: JSON.stringify({
+          channel: channelKey,
+          path: docPath,
+          content: fullRaw,
+          newPath,
+          version,
+          commitMessage,
+          author: 'MrJ',
+        }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Erro ao salvar arquivo');
       state.data = normalizePayload(json.state);
       state.selectedDocPath = json.path;
+      if (json.history) state.versionHistory = json.history;
       return json.path;
     }
 
@@ -665,6 +871,22 @@
   /* =========================================================
      CHROME (Header, Sidebar, Workspace Switcher 1-clique)
   ========================================================= */
+  function updateConnectionBadge() {
+    const connBtn = document.getElementById('connectionModeBtn');
+    const connLbl = document.getElementById('connectionModeLabel');
+    if (!connBtn || !connLbl) return;
+    if (state.serverMode) {
+      connBtn.classList.add('is-live');
+      connLbl.textContent = state.liveConnected ? 'Disco • Ao Vivo' : 'Disco (Local)';
+    } else if (state.dirHandle) {
+      connBtn.classList.add('is-live');
+      connLbl.textContent = 'Pasta Conectada';
+    } else {
+      connBtn.classList.remove('is-live');
+      connLbl.textContent = 'Standalone';
+    }
+  }
+
   function renderChannelSwitchers() {
     const keys = getChannelKeys();
     const channels = state.data?.channels || {};
@@ -676,14 +898,16 @@
           const ch = channels[k].channel || {};
           const active = k === state.activeChannel;
           const isPaused = ch.status === 'pausado';
+          const isHidden = ch.status === 'oculto';
+          const statusLabel = ch.statusLabel || (isPaused ? 'Pausado' : 'Ativo');
           const initials = getChannelInitials(ch);
           return `
-            <button type="button" class="channel-rail-btn${active ? ' is-active' : ''}" data-switch-channel="${MD.escapeHtml(k)}" title="${MD.escapeHtml(ch.name)} (${MD.escapeHtml(ch.handle)}) — ${isPaused ? 'Pausado' : 'Ativo'}">
+            <button type="button" class="channel-rail-btn${active ? ' is-active' : ''}" data-switch-channel="${MD.escapeHtml(k)}" title="${MD.escapeHtml(ch.name)} (${MD.escapeHtml(ch.handle)})${isHidden ? '' : ` — ${MD.escapeHtml(statusLabel)}`}">
               ${ch.avatar
                 ? `<img src="${MD.escapeHtml(ch.avatar)}" alt="${MD.escapeHtml(ch.name)}" referrerpolicy="no-referrer" onerror="this.classList.add('is-broken')"><span class="channel-rail-fallback">${MD.escapeHtml(initials)}</span>`
                 : `<span class="channel-rail-fallback only">${MD.escapeHtml(initials)}</span>`
               }
-              <span class="channel-rail-dot${isPaused ? ' is-paused' : ''}"></span>
+              ${isHidden ? '' : `<span class="channel-rail-dot${isPaused ? ' is-paused' : ''}"></span>`}
             </button>
           `;
         })
@@ -697,19 +921,60 @@
           const ch = channels[k].channel || {};
           const active = k === state.activeChannel;
           const isPaused = ch.status === 'pausado';
-          const badgeText = isPaused ? 'PAUSADO' : 'ATIVO';
+          const isHidden = ch.status === 'oculto';
+          const badgeText = ch.statusLabel || (isPaused ? 'PAUSADO' : 'ATIVO');
           const initials = getChannelInitials(ch);
+          const badgeHtml = isHidden
+            ? ''
+            : `<span class="channel-status-badge ${isPaused ? 'is-pausado' : 'is-ativo'}">${MD.escapeHtml(badgeText)}</span>`;
           return `
             <button type="button" class="channel-pill${active ? ' is-active' : ''}" data-switch-channel="${MD.escapeHtml(k)}" title="Alternar para ${MD.escapeHtml(ch.name)}">
               <span class="channel-pill-avatar">
                 ${ch.avatar
-                  ? `<img src="${MD.escapeHtml(ch.avatar)}" alt="${MD.escapeHtml(ch.name)}" referrerpolicy="no-referrer" onerror="this.classList.add('is-broken')"><span class="avatar-fallback">${MD.escapeHtml(initials)}</span>`
+                  ? `<img src="${MD.escapeHtml(ch.avatar)}" alt="${MD.escapeHtml(ch.name)}" referrerpolicy="no-referrer" onerror="this.classList.add('is-broken'); if(this.nextElementSibling) this.nextElementSibling.style.display='block';"><span class="avatar-fallback">${MD.escapeHtml(initials)}</span>`
                   : `<span>${MD.escapeHtml(initials)}</span>`
                 }
               </span>
               <span>${MD.escapeHtml(ch.name)}</span>
               <span class="channel-pill-handle">${MD.escapeHtml(ch.handle)}</span>
-              <span class="channel-status-badge ${isPaused ? 'is-pausado' : 'is-ativo'}">${badgeText}</span>
+              ${badgeHtml}
+            </button>
+          `;
+        })
+        .join('');
+    }
+
+    const wsMenuListEl = document.getElementById('workspaceMenuList');
+    if (wsMenuListEl) {
+      wsMenuListEl.innerHTML = keys
+        .map((k) => {
+          const entry = channels[k] || {};
+          const ch = entry.channel || {};
+          const active = k === state.activeChannel;
+          const isPaused = ch.status === 'pausado';
+          const isHidden = ch.status === 'oculto';
+          const badgeText = ch.statusLabel || (isPaused ? 'PAUSADO' : 'ATIVO');
+          const docCount = (entry.docs || []).length;
+          const initials = getChannelInitials(ch);
+          const badgeHtml = isHidden
+            ? ''
+            : `<span class="channel-status-badge ${isPaused ? 'is-pausado' : 'is-ativo'}">${MD.escapeHtml(badgeText)}</span>`;
+          return `
+            <button type="button" class="ws-pop-item${active ? ' is-active' : ''}" data-switch-channel="${MD.escapeHtml(k)}" role="menuitem">
+              <span class="ws-pop-avatar">
+                ${ch.avatar
+                  ? `<img src="${MD.escapeHtml(ch.avatar)}" alt="${MD.escapeHtml(ch.name || k)}" referrerpolicy="no-referrer" onerror="this.classList.add('is-broken')"><span class="avatar-fallback">${MD.escapeHtml(initials)}</span>`
+                  : `<img class="is-broken" alt=""><span class="avatar-fallback">${MD.escapeHtml(initials)}</span>`
+                }
+              </span>
+              <span class="ws-pop-meta">
+                <span class="ws-pop-name" style="display:flex; align-items:center; gap:6px;">
+                  <span style="overflow:hidden; text-overflow:ellipsis;">${MD.escapeHtml(ch.name || k)}</span>
+                  ${badgeHtml}
+                </span>
+                <span class="ws-pop-sub">${MD.escapeHtml(ch.handle || k)} • ${docCount} .md</span>
+              </span>
+              ${active ? '<span style="color:var(--accent); font-size:13px; font-weight:700; flex-shrink:0;" aria-label="Ativo">✓</span>' : ''}
             </button>
           `;
         })
@@ -718,6 +983,8 @@
 
     document.querySelectorAll('[data-switch-channel]').forEach((btn) => {
       btn.onclick = () => {
+        document.getElementById('workspaceMenu')?.classList.add('hidden');
+        document.getElementById('channelAvatarBtn')?.setAttribute('aria-expanded', 'false');
         const target = btn.dataset.switchChannel;
         if (target && target !== state.activeChannel) {
           switchChannel(target);
@@ -758,51 +1025,86 @@
       viewsSub.textContent = `${formatNumber(channel.subscribers || 0)} inscritos`;
     }
 
-    const connBtn = document.getElementById('connectionModeBtn');
-    const connLbl = document.getElementById('connectionModeLabel');
-    if (state.serverMode) {
-      connBtn.classList.add('is-live');
-      connLbl.textContent = 'Disco (Local)';
-    } else if (state.dirHandle) {
-      connBtn.classList.add('is-live');
-      connLbl.textContent = 'Pasta Conectada';
-    } else {
-      connBtn.classList.remove('is-live');
-      connLbl.textContent = 'Standalone';
-    }
+    updateConnectionBadge();
 
     const avatarImg = document.getElementById('channelAvatarImg');
     const avatarFallback = document.getElementById('channelAvatarFallback');
     if (avatarFallback) avatarFallback.textContent = getChannelInitials(channel);
     if (avatarImg) {
       if (channel.avatar) {
+        avatarImg.classList.remove('is-broken');
         if (avatarImg.dataset.currentSrc !== channel.avatar) {
-          avatarImg.classList.remove('is-broken');
           avatarImg.dataset.currentSrc = channel.avatar;
           avatarImg.src = channel.avatar;
           avatarImg.onerror = () => avatarImg.classList.add('is-broken');
         }
       } else {
+        avatarImg.dataset.currentSrc = '';
+        avatarImg.removeAttribute('src');
         avatarImg.classList.add('is-broken');
       }
     }
 
+    const avatarDot = document.getElementById('channelAvatarDot');
+    if (avatarDot) {
+      avatarDot.classList.toggle('is-hidden', channel.status === 'oculto');
+      avatarDot.classList.toggle('is-paused', channel.status === 'pausado');
+    }
+
     const pendingAlerts = docs.filter((d) => ['gravando', 'edicao', 'roteiro'].includes(d.meta.status)).length;
     document.getElementById('notifCount').textContent = pendingAlerts;
+
+    const appEl = document.getElementById('app');
+    if (appEl) {
+      appEl.className = `studio-shell view-${state.view}${state.focusMode ? ' is-focus-mode' : ''}`;
+    }
+    document.body.classList.toggle('is-focus-mode', Boolean(state.focusMode));
+
+    const topChip = document.getElementById('topbarChannelChip');
+    if (topChip) {
+      const isPaused = channel.status === 'pausado';
+      const isHidden = channel.status === 'oculto';
+      const statusText = channel.statusLabel || (isPaused ? 'PAUSADO' : 'ATIVO');
+      const badgeHtml = isHidden
+        ? ''
+        : `<span class="channel-status-badge ${isPaused ? 'is-pausado' : 'is-ativo'}">${MD.escapeHtml(statusText)}</span>`;
+      topChip.innerHTML = `<strong>${MD.escapeHtml(channel.name || chData.key)}</strong> <span>${MD.escapeHtml(channel.handle || '')}</span> ${badgeHtml}`;
+    }
+
+    const fabVerBtn = document.getElementById('fabVersionActionBtn');
+    if (fabVerBtn) {
+      fabVerBtn.classList.toggle('hidden', !(state.view === 'scripts' && !!getActiveDoc()));
+    }
 
     document.querySelectorAll('#sideNav .nav-item').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.view === state.view);
     });
   }
 
-  function setView(viewName, docPath = null) {
+  function setView(viewName, docPath = null, { replaceUrl = false } = {}) {
     stopPrompter();
     state.view = viewName;
+    if (viewName !== 'scripts') state.focusMode = false;
+    if (viewName === 'settings' && !state.settingsChannelKey) {
+      state.settingsChannelKey = state.activeChannel;
+    }
     if (docPath) {
       state.selectedDocPath = docPath;
+      state.activeVersion = 'principal';
+      state.versionHistory = null;
+      state.versionFetchedKey = '';
+      state.diffDocPath = '';
+      state.diffFromRef = null;
+      state.diffToRef = null;
+      state.diffResult = null;
+      state.selectedRevPreview = null;
+      state.revPreviewContent = null;
       state.dirtyBody = null;
       state.dirtyMeta = null;
+      state.hasUnsavedEdits = false;
+      state.commitMessageDraft = '';
     }
+    syncBrowserUrl({ replace: replaceUrl });
     updateHeaderChrome();
     renderCurrentView();
   }
@@ -818,6 +1120,9 @@
       case 'scripts':
         renderScriptsView(container);
         break;
+      case 'map':
+        renderMapView(container);
+        break;
       case 'pipeline':
         renderPipelineView(container);
         break;
@@ -832,6 +1137,9 @@
         break;
       case 'agent':
         renderAgentView(container);
+        break;
+      case 'settings':
+        renderSettingsView(container);
         break;
       default:
         renderDashboard(container);
@@ -1082,30 +1390,30 @@
 
     const foldersList = Array.from(new Set(docs.map((d) => d.topFolder))).sort();
 
-    // Banner específico de status do canal (especialmente importante para Crom Pausado vs MrJ Ativo)
     let channelBannerHtml = '';
-    if (isPaused) {
+    if (channel.bannerEnabled && (channel.bannerTitle || channel.bannerSubtitle || channel.bannerBadge)) {
       channelBannerHtml = `
-        <div class="channel-status-banner">
+        <div class="channel-status-banner${isPaused ? '' : ' is-active'}">
           <div class="csb-left">
-            <span class="channel-status-badge is-pausado">OFFLINE / PAUSADO</span>
+            ${channel.bannerBadge ? `<span class="channel-status-badge ${isPaused ? 'is-pausado' : 'is-ativo'}">${MD.escapeHtml(channel.bannerBadge)}</span>` : ''}
             <div>
-              <div class="csb-title">${MD.escapeHtml(channel.name)} (${MD.escapeHtml(channel.handle)}) — Offline / Pausado por falta de investimento</div>
-              <div class="csb-sub">${formatNumber(channel.subscribers || 502)} inscritos • ${formatNumber(totalVideosPublic)} vídeos no canal (${videos.length} recentes no RSS) • Acervo e ponte Kdenlive preservados para retomada via GitHub.</div>
+              ${channel.bannerTitle ? `<div class="csb-title">${MD.escapeHtml(channel.bannerTitle)}</div>` : ''}
+              ${channel.bannerSubtitle ? `<div class="csb-sub">${MD.escapeHtml(channel.bannerSubtitle)}</div>` : ''}
             </div>
           </div>
           <div style="display:flex; gap:8px; flex-wrap:wrap;">
-            <button type="button" class="btn-sm" data-open-doc="00-canal/identidade-e-status.md">Ver Status</button>
-            <button type="button" class="btn-sm btn-kdenlive" id="bannerOpenProdBtn">Ponte Kdenlive ↗</button>
+            ${channel.bannerDocPath ? `<button type="button" class="btn-sm" data-open-doc="${MD.escapeHtml(channel.bannerDocPath)}">Abrir Doc</button>` : ''}
+            <button type="button" class="btn-sm" id="bannerConfigBtn">⚙ Configurar</button>
           </div>
         </div>
       `;
     }
 
-    // Destaque das 5 séries principais no MrJ
+    // Destaque dinâmico das séries configuradas em spotlightSeries
     let seriesSpotlightHtml = '';
-    if (chData.key === 'mrj') {
-      const spotItems = MRJ_SPOTLIGHT_SERIES.map((name) => {
+    const spotlightList = Array.isArray(channel.spotlightSeries) ? channel.spotlightSeries : [];
+    if (spotlightList.length > 0) {
+      const spotItems = spotlightList.map((name) => {
         const stat = seriesList.find((s) => s.name === name) || {
           name,
           meta: SERIE_META[name] || { icon: '✦', color: '#e12d78' },
@@ -1113,25 +1421,28 @@
           videosCount: 0,
         };
         const isOnlyThis = state.selectedSeries.size === 1 && state.selectedSeries.has(name);
-        const folderPath = SERIE_META[name]?.folder || '06-series';
+        const manifestDoc = docs.find((d) => d.meta.serie === name && d.filename.toLowerCase() === '_serie.md');
+        const folderPath = SERIE_META[name]?.folder || (manifestDoc ? manifestDoc.folder : '');
+        const openPath = manifestDoc?.path || (folderPath ? `${folderPath}/_serie.md` : '');
         return `
           <div class="serie-chip-card${isOnlyThis ? ' is-selected' : ''}" data-spot-filter="${MD.escapeHtml(name)}" style="cursor:pointer;">
             <span class="sel-icon" style="background: ${stat.meta.color}22; border: 1px solid ${stat.meta.color}66; color:${stat.meta.color}">${stat.meta.icon}</span>
             <div style="min-width:0; flex:1;">
               <div class="sel-name">${MD.escapeHtml(name)}</div>
-              <div class="sel-sub">${stat.docsCount} .md • ${folderPath}</div>
+              <div class="sel-sub">${stat.docsCount} .md${folderPath ? ` • ${MD.escapeHtml(folderPath)}` : ` • ${stat.videosCount} vídeos`}</div>
             </div>
-            <button type="button" class="kc-move-btn" data-spot-open="${MD.escapeHtml(folderPath)}/_serie.md" title="Abrir manifesto da série">Abrir</button>
+            ${openPath ? `<button type="button" class="kc-move-btn" data-spot-open="${MD.escapeHtml(openPath)}" title="Abrir manifesto da série">Abrir</button>` : ''}
           </div>
         `;
       }).join('');
 
+      const hasSeriesReadme = docs.some((d) => d.path === '06-series/README.md');
       seriesSpotlightHtml = `
         <section class="series-spotlight">
           <div class="section-subhead" style="margin-bottom:10px;">
-            <h2 class="panel-title">Séries Principais do MrJ (06-series/)</h2>
+            <h2 class="panel-title">Séries em Destaque (${MD.escapeHtml(channel.name || chData.key)})</h2>
             <div style="display:flex; gap:8px;">
-              <button type="button" class="btn-sm" data-open-doc="06-series/README.md">Mapa das Séries</button>
+              ${hasSeriesReadme ? '<button type="button" class="btn-sm" data-open-doc="06-series/README.md">Mapa das Séries</button>' : ''}
               <button type="button" class="btn-sm btn-accent" id="newSerieEpBtn">+ Novo Episódio de Série</button>
             </div>
           </div>
@@ -1359,12 +1670,25 @@
     `;
 
     // Bindings
-    const bannerProdBtn = document.getElementById('bannerOpenProdBtn');
-    if (bannerProdBtn) bannerProdBtn.onclick = () => setView('production');
+    const bannerCfgBtn = document.getElementById('bannerConfigBtn');
+    if (bannerCfgBtn) {
+      bannerCfgBtn.onclick = () => {
+        state.settingsChannelKey = chData.key;
+        setView('settings');
+      };
+    }
 
     const newSerieEpBtn = document.getElementById('newSerieEpBtn');
     if (newSerieEpBtn) {
-      newSerieEpBtn.onclick = () => openNewDocModal({ type: 'episodio-serie', serie: 'Imagine', folder: '06-series/imagine' });
+      newSerieEpBtn.onclick = () => {
+        const firstSpot = (Array.isArray(channel.spotlightSeries) && channel.spotlightSeries[0]) || getChannelSeriesList(chData)[0] || '';
+        const spotFolder = SERIE_META[firstSpot]?.folder || '02-roteiros/rascunhos';
+        openNewDocModal({
+          type: spotFolder.startsWith('06-series/') ? 'episodio-serie' : 'roteiro-longo',
+          serie: firstSpot,
+          folder: spotFolder,
+        });
+      };
     }
 
     container.querySelectorAll('[data-spot-filter]').forEach((card) => {
@@ -1491,6 +1815,491 @@
   }
 
   /* =========================================================
+     HELPERS DE VERSIONAMENTO (GIT DE ROTEIROS & VERSÕES)
+  ========================================================= */
+  async function loadVersionHistory(docPath, { force = false, skipRender = false } = {}) {
+    if (!state.serverMode || !docPath) return null;
+    const chKey = state.activeChannel;
+    const fetchKey = `${chKey}::${docPath}`;
+    if (!force && state.versionLoading && state.versionFetchedKey === fetchKey) {
+      return state.versionHistory;
+    }
+    state.versionLoading = true;
+    state.versionFetchedKey = fetchKey;
+    state.versionError = null;
+    try {
+      const res = await fetch(
+        `/api/versions?channel=${encodeURIComponent(chKey)}&path=${encodeURIComponent(docPath)}`,
+        { cache: 'no-store' }
+      );
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Erro ao carregar histórico do roteiro');
+      if (state.activeChannel !== chKey || getActiveDoc()?.path !== docPath) return json;
+      state.versionHistory = json;
+      const revs = json.revisions || [];
+      if (!state.diffFromRef || !state.diffToRef || state.diffDocPath !== docPath) {
+        state.diffDocPath = docPath;
+        if (revs.length >= 2) {
+          state.diffFromRef = `rev:${revs[1].id}`;
+          state.diffToRef = `rev:${revs[0].id}`;
+        } else if (revs.length === 1) {
+          state.diffFromRef = `rev:${revs[0].id}`;
+          state.diffToRef = 'ver:principal';
+        } else {
+          state.diffFromRef = 'ver:principal';
+          state.diffToRef = 'ver:principal';
+        }
+      }
+      if (state.docMode === 'history' && !state.diffResult && state.diffFromRef && state.diffToRef) {
+        await loadDiffForDoc(docPath, state.diffFromRef, state.diffToRef, { silentRender: true });
+      }
+      return json;
+    } catch (err) {
+      if (state.activeChannel === chKey && getActiveDoc()?.path === docPath) {
+        state.versionError = err.message;
+      }
+      return null;
+    } finally {
+      state.versionLoading = false;
+      if (!skipRender && state.view === 'scripts' && state.activeChannel === chKey && getActiveDoc()?.path === docPath) {
+        renderScriptsView(document.getElementById('viewContainer'));
+      }
+    }
+  }
+
+  async function switchDocVersion(docPath, versionName = 'principal') {
+    const cleanVer = (versionName || 'principal').trim() || 'principal';
+    stopPrompter();
+    state.selectedRevPreview = null;
+    state.revPreviewContent = null;
+    state.hasUnsavedEdits = false;
+    if (cleanVer === 'principal') {
+      state.activeVersion = 'principal';
+      state.dirtyBody = null;
+      state.dirtyMeta = null;
+      syncBrowserUrl({ replace: false });
+      updateHeaderChrome();
+      if (state.view === 'scripts') renderScriptsView(document.getElementById('viewContainer'));
+      return;
+    }
+    if (!state.serverMode) {
+      showToast('Versões alternativas requerem o servidor local (./bin/crom-studio --tray).');
+      return;
+    }
+    try {
+      const res = await fetch(
+        `/api/versions/content?channel=${encodeURIComponent(state.activeChannel)}&path=${encodeURIComponent(docPath)}&ref=${encodeURIComponent(`ver:${cleanVer}`)}`,
+        { cache: 'no-store' }
+      );
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || `Versão "${cleanVer}" não encontrada`);
+      const parsed = MD.parseFrontmatter(json.content || '');
+      state.activeVersion = cleanVer;
+      state.dirtyMeta = Object.keys(parsed.meta).length ? parsed.meta : null;
+      state.dirtyBody = parsed.body;
+      state.hasUnsavedEdits = false;
+      syncBrowserUrl({ replace: false });
+      updateHeaderChrome();
+      if (state.view === 'scripts') renderScriptsView(document.getElementById('viewContainer'));
+      showToast(`Editando versão "${cleanVer}"`);
+    } catch (err) {
+      showToast(err.message);
+    }
+  }
+
+  async function loadDiffForDoc(docPath, fromRef, toRef, { silentRender = false } = {}) {
+    if (!state.serverMode || !docPath) return null;
+    try {
+      const res = await fetch(
+        `/api/versions/diff?channel=${encodeURIComponent(state.activeChannel)}&path=${encodeURIComponent(docPath)}&from=${encodeURIComponent(fromRef)}&to=${encodeURIComponent(toRef)}`,
+        { cache: 'no-store' }
+      );
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Erro ao calcular diff');
+      state.diffDocPath = docPath;
+      state.diffFromRef = fromRef;
+      state.diffToRef = toRef;
+      state.diffResult = json;
+      state.selectedRevPreview = null;
+      state.revPreviewContent = null;
+      if (!silentRender && state.view === 'scripts') {
+        renderScriptsView(document.getElementById('viewContainer'));
+      }
+      return json;
+    } catch (err) {
+      showToast(err.message);
+      return null;
+    }
+  }
+
+  async function loadRevisionPreview(docPath, revId) {
+    if (!state.serverMode || !docPath || !revId) return;
+    try {
+      const ref = revId === 'disk' ? 'disk' : `rev:${revId}`;
+      const res = await fetch(
+        `/api/versions/content?channel=${encodeURIComponent(state.activeChannel)}&path=${encodeURIComponent(docPath)}&ref=${encodeURIComponent(ref)}`,
+        { cache: 'no-store' }
+      );
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Erro ao ler snapshot');
+      state.selectedRevPreview = revId;
+      state.revPreviewContent = json.content || '';
+      if (state.view === 'scripts') renderScriptsView(document.getElementById('viewContainer'));
+    } catch (err) {
+      showToast(err.message);
+    }
+  }
+
+  async function restoreDocRevision(docPath, revId, targetVersion = 'principal') {
+    if (!state.serverMode || !docPath || !revId || revId === 'disk') return;
+    const labelTarget = targetVersion === 'principal' ? 'arquivo principal' : `versão "${targetVersion}"`;
+    if (!confirm(`Restaurar o snapshot ${revId} para ${labelTarget}? (O histórico atual não será perdido; uma nova revisão de restauração será gravada.)`)) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/versions/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channel: state.activeChannel,
+          path: docPath,
+          revId,
+          targetVersion,
+          author: 'MrJ',
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Erro ao restaurar revisão');
+      state.data = normalizePayload(json.state);
+      state.versionHistory = json.history;
+      state.activeVersion = json.version || targetVersion;
+      state.hasUnsavedEdits = false;
+      if (state.activeVersion === 'principal') {
+        state.dirtyBody = null;
+        state.dirtyMeta = null;
+      } else {
+        const parsed = MD.parseFrontmatter(json.content || '');
+        state.dirtyMeta = Object.keys(parsed.meta).length ? parsed.meta : null;
+        state.dirtyBody = parsed.body;
+      }
+      state.diffResult = null;
+      state.selectedRevPreview = null;
+      state.revPreviewContent = null;
+      syncBrowserUrl({ replace: true });
+      updateHeaderChrome();
+      renderCurrentView();
+      showToast(`Snapshot ${revId} restaurado como ${json.revision?.id || 'nova revisão'}!`);
+    } catch (err) {
+      showToast(err.message);
+    }
+  }
+
+  async function promoteDocVersion(docPath, versionName) {
+    if (!state.serverMode || !docPath || !versionName || versionName === 'principal') return;
+    if (!confirm(`Promover a versão "${versionName}" para substituir o .md principal em disco? (Será gravado um commit de promoção no histórico.)`)) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/versions/promote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channel: state.activeChannel,
+          path: docPath,
+          versionName,
+          author: 'MrJ',
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Erro ao promover versão');
+      state.data = normalizePayload(json.state);
+      state.versionHistory = json.history;
+      state.activeVersion = 'principal';
+      state.dirtyBody = null;
+      state.dirtyMeta = null;
+      state.hasUnsavedEdits = false;
+      state.diffResult = null;
+      syncBrowserUrl({ replace: false });
+      updateHeaderChrome();
+      renderCurrentView();
+      showToast(`Versão "${versionName}" promovida para principal!`);
+    } catch (err) {
+      showToast(err.message);
+    }
+  }
+
+  async function deleteDocVersion(docPath, versionName) {
+    if (!state.serverMode || !docPath || !versionName || versionName === 'principal') return;
+    if (!confirm(`Excluir a versão alternativa "${versionName}"? (Os commits já salvos continuam na linha do tempo.)`)) {
+      return;
+    }
+    try {
+      const res = await fetch(
+        `/api/versions?channel=${encodeURIComponent(state.activeChannel)}&path=${encodeURIComponent(docPath)}&versionName=${encodeURIComponent(versionName)}`,
+        { method: 'DELETE' }
+      );
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Erro ao excluir versão');
+      state.data = normalizePayload(json.state);
+      state.versionHistory = json.history;
+      if (state.activeVersion === versionName) {
+        state.activeVersion = 'principal';
+        state.dirtyBody = null;
+        state.dirtyMeta = null;
+        state.hasUnsavedEdits = false;
+      }
+      syncBrowserUrl({ replace: true });
+      updateHeaderChrome();
+      renderCurrentView();
+      showToast(`Versão "${versionName}" removida.`);
+    } catch (err) {
+      showToast(err.message);
+    }
+  }
+
+  function openNewVersionModal(doc) {
+    if (!doc) return;
+    if (!state.serverMode) {
+      showToast('Criar versão alternativa requer o servidor local rodando.');
+      return;
+    }
+    const nameEl = document.getElementById('newVerName');
+    const descEl = document.getElementById('newVerDesc');
+    const fromEl = document.getElementById('newVerFrom');
+    const versions = state.versionHistory?.versions || [{ name: 'principal', description: 'Principal' }];
+    const revs = (state.versionHistory?.revisions || []).filter((r) => r.id && r.id !== 'disk').slice(0, 12);
+
+    const existingVariants = versions.filter((v) => !v.isPrimary).length;
+    nameEl.value = `v${existingVariants + 2}-alternativa`;
+    descEl.value = '';
+    fromEl.innerHTML = [
+      ...versions.map(
+        (v) =>
+          `<option value="ver:${MD.escapeHtml(v.name)}"${v.name === state.activeVersion ? ' selected' : ''}>Versão: ${MD.escapeHtml(v.name)}${v.headRev ? ` (${v.headRev})` : ''}</option>`
+      ),
+      ...revs.map(
+        (r) => `<option value="rev:${MD.escapeHtml(r.id)}">Commit ${MD.escapeHtml(r.id)} — ${MD.escapeHtml(r.message)}</option>`
+      ),
+    ].join('');
+
+    document.getElementById('newVersionModal').classList.remove('hidden');
+    nameEl.focus();
+    nameEl.select();
+  }
+
+  /* =========================================================
+     VIEW MAPA DE ROTEIROS (COLORIDO POR STATUS)
+  ========================================================= */
+  function renderMapView(container) {
+    const chData = getActiveChannelData();
+    const docsAll = chData.docs || [];
+    const docsPool = state.mapHideMeta
+      ? docsAll.filter(
+          (d) =>
+            d.meta.status !== 'template' &&
+            d.meta.status !== 'referencia' &&
+            d.path !== 'AGENTS.md' &&
+            d.path !== 'README.md'
+        )
+      : docsAll;
+
+    const statusOrder = ['publicado', 'gravando', 'edicao', 'roteiro', 'pesquisa', 'ideia', 'referencia', 'template', 'arquivado'];
+    const statusCounts = {};
+    for (const st of statusOrder) statusCounts[st] = 0;
+    for (const d of docsPool) {
+      const st = d.meta.status || 'ideia';
+      statusCounts[st] = (statusCounts[st] || 0) + 1;
+    }
+
+    const totalPool = docsPool.length || 1;
+    const distSegmentsHtml = statusOrder
+      .filter((st) => statusCounts[st] > 0)
+      .map((st) => {
+        const vis = STATUS_VISUAL[st] || STATUS_VISUAL.ideia;
+        const pct = ((statusCounts[st] / totalPool) * 100).toFixed(2);
+        return `<div class="map-dist-seg" style="width:${pct}%; background:${vis.color};" title="${vis.label}: ${statusCounts[st]} arquivo(s) (${Math.round((statusCounts[st] / totalPool) * 100)}%)"></div>`;
+      })
+      .join('');
+
+    const legendHtml = `
+      <button type="button" class="map-legend-pill${state.mapStatusFilter === 'all' ? ' is-active' : ''}" data-map-status="all" style="--st-color: var(--accent);">
+        <span class="map-legend-dot"></span>
+        <span>Todos (${docsPool.length})</span>
+      </button>
+      ${statusOrder
+        .filter((st) => statusCounts[st] > 0)
+        .map((st) => {
+          const vis = STATUS_VISUAL[st] || STATUS_VISUAL.ideia;
+          const active = state.mapStatusFilter === st;
+          return `
+            <button type="button" class="map-legend-pill${active ? ' is-active' : ''}" data-map-status="${st}" style="--st-color: ${vis.color};">
+              <span class="map-legend-dot"></span>
+              <span>${vis.label} (${statusCounts[st]})</span>
+            </button>
+          `;
+        })
+        .join('')}
+    `;
+
+    const filteredDocs = docsPool.filter((d) => {
+      if (state.mapStatusFilter !== 'all' && d.meta.status !== state.mapStatusFilter) return false;
+      if (state.mapSearch) {
+        const q = state.mapSearch.toLowerCase();
+        const hay = `${d.meta.titulo} ${d.meta.serie} ${d.path} ${d.meta.resumo} ${(d.meta.tags || []).join(' ')}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+
+    const renderMapCard = (d) => {
+      const st = d.meta.status || 'ideia';
+      const vis = STATUS_VISUAL[st] || STATUS_VISUAL.ideia;
+      const ver = d.versioning || {};
+      const verLabel =
+        ver.versionsCount > 1
+          ? `${ver.versionsCount} vers. • ${ver.headRev || ''}`
+          : ver.headRev
+          ? `${ver.headRev}`
+          : '';
+      return `
+        <button type="button" class="map-card" data-open-map-doc="${MD.escapeHtml(d.path)}" style="--st-color:${vis.color}; --st-bg:${vis.bg}; --st-border:${vis.border};">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:6px; width:100%;">
+            <span class="status-pill st-${MD.escapeHtml(st)}">${MD.escapeHtml(vis.label)}</span>
+            ${verLabel ? `<span style="font-family:var(--font-mono); font-size:10px; color:var(--text-3);">${MD.escapeHtml(verLabel)}</span>` : ''}
+          </div>
+          <span class="map-card-title">${MD.escapeHtml(d.meta.titulo)}</span>
+          <div class="map-card-foot">
+            <span>${MD.escapeHtml(d.meta.serie || d.topFolder)}</span>
+            <span>${formatNumber(d.stats.words)} pal.${d.meta.duracao_estimada ? ` • ${MD.escapeHtml(d.meta.duracao_estimada)}` : ''}</span>
+          </div>
+        </button>
+      `;
+    };
+
+    let bodyHtml = '';
+    if (!filteredDocs.length) {
+      bodyHtml = `<div class="panel" style="padding:36px; text-align:center; color:var(--text-3);">Nenhum roteiro encontrado com esses filtros.</div>`;
+    } else if (state.mapGroupBy === 'mosaic') {
+      const sorted = [...filteredDocs].sort((a, b) => {
+        const ia = statusOrder.indexOf(a.meta.status);
+        const ib = statusOrder.indexOf(b.meta.status);
+        if (ia !== ib) return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+        return String(b.mtime || '').localeCompare(String(a.mtime || ''));
+      });
+      bodyHtml = `<div class="map-mosaic-grid">${sorted.map(renderMapCard).join('')}</div>`;
+    } else {
+      const groups = new Map();
+      for (const d of filteredDocs) {
+        const key =
+          state.mapGroupBy === 'folder'
+            ? d.topFolder || 'raiz'
+            : d.meta.serie || 'Sem Série';
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(d);
+      }
+
+      bodyHtml = Array.from(groups.entries())
+        .sort((a, b) => b[1].length - a[1].length)
+        .map(([groupName, items]) => {
+          const sMeta = SERIE_META[groupName] || {};
+          const icon = sMeta.icon || (state.mapGroupBy === 'folder' ? '📁' : '•');
+          const pubCount = items.filter((i) => i.meta.status === 'publicado').length;
+          const activeCount = items.filter((i) => ['roteiro', 'gravando', 'edicao'].includes(i.meta.status)).length;
+          const sortedItems = [...items].sort((a, b) => {
+            const ia = statusOrder.indexOf(a.meta.status);
+            const ib = statusOrder.indexOf(b.meta.status);
+            return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+          });
+          return `
+            <section class="map-serie-section">
+              <div class="map-serie-head">
+                <div style="display:flex; align-items:center; gap:9px;">
+                  <span style="color:${sMeta.color || 'var(--accent)'}; font-size:15px;">${icon}</span>
+                  <h3 style="margin:0; font-size:14.5px; font-weight:600;">${MD.escapeHtml(groupName)}</h3>
+                  <span class="kanban-count">${items.length}</span>
+                </div>
+                <div style="display:flex; align-items:center; gap:10px; font-family:var(--font-mono); font-size:11px; color:var(--text-3);">
+                  <span style="color:#22c55e;">${pubCount} pub.</span>
+                  <span style="color:var(--accent);">${activeCount} em prod.</span>
+                </div>
+              </div>
+              <div class="map-cards-grid">
+                ${sortedItems.map(renderMapCard).join('')}
+              </div>
+            </section>
+          `;
+        })
+        .join('');
+    }
+
+    container.innerHTML = `
+      <div class="map-header-bar">
+        <div class="section-subhead" style="margin:0;">
+          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <div class="mode-switch" id="mapGroupSwitch">
+              <button type="button" class="${state.mapGroupBy === 'serie' ? 'active' : ''}" data-map-group="serie">Por Série</button>
+              <button type="button" class="${state.mapGroupBy === 'mosaic' ? 'active' : ''}" data-map-group="mosaic">Mosaico por Status</button>
+              <button type="button" class="${state.mapGroupBy === 'folder' ? 'active' : ''}" data-map-group="folder">Por Pasta</button>
+            </div>
+            <input type="search" class="search-box-sm" id="mapSearchInput" placeholder="Buscar no mapa..." value="${MD.escapeHtml(state.mapSearch)}" style="width:220px; margin:0; height:32px;">
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <button type="button" class="btn-sm" id="mapHideMetaBtn">${state.mapHideMeta ? 'Mostrar Docs/Templates' : 'Ocultar Docs/Templates'}</button>
+            <button type="button" class="btn-sm btn-accent" id="mapNewDocBtn">+ Novo Roteiro</button>
+          </div>
+        </div>
+        <div class="map-dist-bar" title="Distribuição proporcional dos status">${distSegmentsHtml}</div>
+        <div class="map-legend">${legendHtml}</div>
+      </div>
+
+      ${bodyHtml}
+    `;
+
+    container.querySelectorAll('#mapGroupSwitch button').forEach((btn) => {
+      btn.onclick = () => {
+        state.mapGroupBy = btn.dataset.mapGroup;
+        renderMapView(container);
+      };
+    });
+
+    const mapSearchEl = document.getElementById('mapSearchInput');
+    if (mapSearchEl) {
+      mapSearchEl.oninput = () => {
+        state.mapSearch = mapSearchEl.value;
+        const pos = mapSearchEl.selectionStart;
+        renderMapView(container);
+        const again = document.getElementById('mapSearchInput');
+        if (again) {
+          again.focus();
+          again.setSelectionRange(pos, pos);
+        }
+      };
+    }
+
+    container.querySelectorAll('[data-map-status]').forEach((btn) => {
+      btn.onclick = () => {
+        state.mapStatusFilter = btn.dataset.mapStatus;
+        renderMapView(container);
+      };
+    });
+
+    const hideMetaBtn = document.getElementById('mapHideMetaBtn');
+    if (hideMetaBtn) {
+      hideMetaBtn.onclick = () => {
+        state.mapHideMeta = !state.mapHideMeta;
+        renderMapView(container);
+      };
+    }
+
+    const mapNewBtn = document.getElementById('mapNewDocBtn');
+    if (mapNewBtn) mapNewBtn.onclick = () => openNewDocModal();
+
+    container.querySelectorAll('[data-open-map-doc]').forEach((card) => {
+      card.onclick = () => setView('scripts', card.dataset.openMapDoc);
+    });
+  }
+
+  /* =========================================================
      VIEW 2: ROTEIROS & LEITOR / EDITOR / TELEPROMPTER
   ========================================================= */
   function getActiveDoc() {
@@ -1515,12 +2324,234 @@
     return baseParts.join('/');
   }
 
+  function renderHistoryDiffTab(activeDoc) {
+    if (!state.serverMode) {
+      return `
+        <div class="doc-body-scroll">
+          <div class="glass-card" style="max-width:600px; margin:24px auto;">
+            <h3 class="gc-title">Histórico Git & Diff de Roteiros</h3>
+            <p class="gc-desc">
+              O histórico de revisões, comparação linha a linha e versões alternativas estão disponíveis quando o painel roda com o servidor local:
+              <code>./bin/crom-studio --tray</code> (ou <code>npm start</code>).
+            </p>
+          </div>
+        </div>
+      `;
+    }
+
+    if (state.versionLoading && !state.versionHistory) {
+      return `<div class="doc-body-scroll"><p style="color:var(--text-3); padding:24px;">Carregando histórico de revisões...</p></div>`;
+    }
+
+    if (state.versionError) {
+      return `
+        <div class="doc-body-scroll">
+          <div class="glass-card" style="max-width:560px; margin:24px auto;">
+            <h3 class="gc-title">Erro ao carregar histórico</h3>
+            <p class="gc-desc">${MD.escapeHtml(state.versionError)}</p>
+            <div class="gc-actions">
+              <button type="button" class="btn-sm btn-accent" id="retryHistoryBtn">Tentar novamente</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    const history = state.versionHistory || { versions: [], revisions: [] };
+    const versions = history.versions || [];
+    const revisions = history.revisions || [];
+
+    const buildRefOptions = (selectedVal) => {
+      const verOpts = versions.map((v) => {
+        const val = `ver:${v.name}`;
+        return `<option value="${MD.escapeHtml(val)}"${selectedVal === val ? ' selected' : ''}>Versão: ${MD.escapeHtml(v.name)}${v.headRev ? ` (${MD.escapeHtml(v.headRev)})` : ''}</option>`;
+      });
+      const revOpts = revisions.map((r) => {
+        const val = r.id === 'disk' ? 'disk' : `rev:${r.id}`;
+        const isSelected = selectedVal === val || (r.id === 'disk' && selectedVal === 'rev:disk');
+        return `<option value="${MD.escapeHtml(val)}"${isSelected ? ' selected' : ''}>${MD.escapeHtml(r.id)} (${MD.escapeHtml(r.version || 'principal')}) — ${MD.escapeHtml(String(r.message || '').slice(0, 42))}</option>`;
+      });
+      return [...verOpts, ...revOpts].join('');
+    };
+
+    const timelineHtml = revisions.length
+      ? revisions
+          .map((rev) => {
+            const isSelected = state.selectedRevPreview === rev.id;
+            const dateStr = formatDatePt(String(rev.createdAt || '').slice(0, 10));
+            return `
+              <div class="git-rev-card${isSelected ? ' is-selected' : ''}">
+                <div class="git-rev-top">
+                  <span style="font-weight:700; color:var(--text-1);">${MD.escapeHtml(rev.id)}</span>
+                  <span class="git-kind-badge kind-${MD.escapeHtml(rev.kind || 'commit')}">${MD.escapeHtml(rev.kind || 'commit')}</span>
+                  <span style="color:var(--accent);">${MD.escapeHtml(rev.version || 'principal')}</span>
+                </div>
+                <div style="font-size:12px; font-weight:600; color:var(--text-1); line-height:1.35;">${MD.escapeHtml(rev.message || '')}</div>
+                <div style="font-size:11px; color:var(--text-3); display:flex; justify-content:space-between; gap:6px; flex-wrap:wrap;">
+                  <span>${MD.escapeHtml(rev.author || 'MrJ')} • ${MD.escapeHtml(dateStr)}</span>
+                  <span style="font-family:var(--font-mono);">
+                    <span style="color:#86efac;">+${Number(rev.added || 0)}</span>
+                    <span style="color:#fda4af;">-${Number(rev.removed || 0)}</span>
+                    • ${Number(rev.words || 0)} pal.
+                  </span>
+                </div>
+                <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:2px;">
+                  <button type="button" class="kc-move-btn" data-rev-preview="${MD.escapeHtml(rev.id)}">Snapshot</button>
+                  <button type="button" class="kc-move-btn" data-rev-diff="${MD.escapeHtml(rev.id)}">Diff c/ atual</button>
+                  ${rev.id !== 'disk' ? `<button type="button" class="kc-move-btn" data-rev-restore="${MD.escapeHtml(rev.id)}">Restaurar</button>` : ''}
+                </div>
+              </div>
+            `;
+          })
+          .join('')
+      : '<p style="color:var(--text-3); font-size:12px; padding:10px;">Nenhuma revisão registrada ainda. Salve uma edição para criar o primeiro snapshot.</p>';
+
+    let rightPaneHtml = '';
+    if (state.selectedRevPreview && state.revPreviewContent !== null) {
+      rightPaneHtml = `
+        <div class="git-diff-toolbar">
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <strong style="font-size:12.5px;">Snapshot: <code>${MD.escapeHtml(state.selectedRevPreview)}</code></strong>
+            <span style="font-size:11px; color:var(--text-3);">(${MD.escapeHtml(activeDoc.path)})</span>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            ${state.selectedRevPreview !== 'disk' ? `<button type="button" class="btn-sm btn-accent" id="restorePreviewBtn">↺ Restaurar este snapshot</button>` : ''}
+            <button type="button" class="btn-sm" id="closeRevPreviewBtn">Voltar ao Diff</button>
+          </div>
+        </div>
+        <div class="diff-viewer">
+          <pre style="margin:0; white-space:pre-wrap; word-break:break-word; font-family:var(--font-mono); font-size:12px; line-height:1.6; color:var(--text-1);">${MD.escapeHtml(state.revPreviewContent)}</pre>
+        </div>
+      `;
+    } else {
+      const diff = state.diffResult;
+      const diffBodyHtml = diff
+        ? (diff.lines || [])
+            .map((line) => {
+              const marker = line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' ';
+              return `
+                <div class="diff-line is-${MD.escapeHtml(line.type)}">
+                  <span class="diff-ln">${line.oldLine ?? ''}</span>
+                  <span class="diff-ln">${line.newLine ?? ''}</span>
+                  <span class="diff-ln">${marker}</span>
+                  <span>${MD.escapeHtml(line.text)}</span>
+                </div>
+              `;
+            })
+            .join('') || '<p style="color:var(--text-3); padding:12px;">Sem diferenças entre as referências selecionadas.</p>'
+        : '<p style="color:var(--text-3); padding:12px;">Selecione duas referências acima para visualizar as alterações linha a linha.</p>';
+
+      rightPaneHtml = `
+        <div class="git-diff-toolbar">
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <span style="font-size:11px; color:var(--text-3);">De:</span>
+            <select class="select-dark" id="diffFromSelect" style="height:28px; font-size:11.5px; max-width:210px;">
+              ${buildRefOptions(state.diffFromRef)}
+            </select>
+            <button type="button" class="icon-btn-sm" id="diffSwapBtn" title="Inverter comparação">⇄</button>
+            <span style="font-size:11px; color:var(--text-3);">Para:</span>
+            <select class="select-dark" id="diffToSelect" style="height:28px; font-size:11.5px; max-width:210px;">
+              ${buildRefOptions(state.diffToRef)}
+            </select>
+          </div>
+          ${diff
+            ? `<div style="font-family:var(--font-mono); font-size:11px; display:flex; gap:10px;">
+                <span style="color:#86efac;">+${Number(diff.added || 0)}</span>
+                <span style="color:#fda4af;">-${Number(diff.removed || 0)}</span>
+                <span style="color:var(--text-3);">${Number(diff.unchanged || 0)} iguais</span>
+              </div>`
+            : ''}
+        </div>
+        <div class="diff-viewer">${diffBodyHtml}</div>
+      `;
+    }
+
+    return `
+      <div class="git-view-grid">
+        <div class="git-timeline">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:4px;">
+            <span class="insp-title">Linha do Tempo (${revisions.length})</span>
+            <button type="button" class="kc-move-btn" id="refreshHistoryBtn">↻ Atualizar</button>
+          </div>
+          ${timelineHtml}
+        </div>
+        <div class="git-diff-pane">${rightPaneHtml}</div>
+      </div>
+    `;
+  }
+
+  function bindHistoryDiffEvents(activeDoc, container) {
+    const retryBtn = document.getElementById('retryHistoryBtn');
+    if (retryBtn) retryBtn.onclick = () => loadVersionHistory(activeDoc.path, { force: true });
+
+    const refreshBtn = document.getElementById('refreshHistoryBtn');
+    if (refreshBtn) refreshBtn.onclick = () => loadVersionHistory(activeDoc.path, { force: true });
+
+    const fromSel = document.getElementById('diffFromSelect');
+    const toSel = document.getElementById('diffToSelect');
+    if (fromSel && toSel) {
+      const triggerDiff = () => loadDiffForDoc(activeDoc.path, fromSel.value, toSel.value);
+      fromSel.onchange = triggerDiff;
+      toSel.onchange = triggerDiff;
+    }
+
+    const swapBtn = document.getElementById('diffSwapBtn');
+    if (swapBtn && fromSel && toSel) {
+      swapBtn.onclick = () => {
+        loadDiffForDoc(activeDoc.path, toSel.value, fromSel.value);
+      };
+    }
+
+    container.querySelectorAll('[data-rev-preview]').forEach((btn) => {
+      btn.onclick = () => loadRevisionPreview(activeDoc.path, btn.dataset.revPreview);
+    });
+
+    container.querySelectorAll('[data-rev-diff]').forEach((btn) => {
+      btn.onclick = () => {
+        const revId = btn.dataset.revDiff;
+        const fromRef = revId === 'disk' ? 'disk' : `rev:${revId}`;
+        const toRef = `ver:${state.activeVersion || 'principal'}`;
+        loadDiffForDoc(activeDoc.path, fromRef, toRef);
+      };
+    });
+
+    container.querySelectorAll('[data-rev-restore]').forEach((btn) => {
+      btn.onclick = () => restoreDocRevision(activeDoc.path, btn.dataset.revRestore, state.activeVersion || 'principal');
+    });
+
+    const closePrevBtn = document.getElementById('closeRevPreviewBtn');
+    if (closePrevBtn) {
+      closePrevBtn.onclick = () => {
+        state.selectedRevPreview = null;
+        state.revPreviewContent = null;
+        if (!state.diffResult && state.diffFromRef && state.diffToRef) {
+          loadDiffForDoc(activeDoc.path, state.diffFromRef, state.diffToRef);
+        } else {
+          renderScriptsView(container);
+        }
+      };
+    }
+
+    const restorePrevBtn = document.getElementById('restorePreviewBtn');
+    if (restorePrevBtn && state.selectedRevPreview) {
+      restorePrevBtn.onclick = () =>
+        restoreDocRevision(activeDoc.path, state.selectedRevPreview, state.activeVersion || 'principal');
+    }
+  }
+
   function renderScriptsView(container) {
     const chData = getActiveChannelData();
     const docs = chData.docs || [];
     const activeDoc = getActiveDoc();
     if (activeDoc && !state.selectedDocPath) {
       state.selectedDocPath = activeDoc.path;
+    }
+
+    if (state.serverMode && activeDoc) {
+      const expectedFetchKey = `${state.activeChannel}::${activeDoc.path}`;
+      if (state.versionFetchedKey !== expectedFetchKey && !state.versionLoading) {
+        loadVersionHistory(activeDoc.path);
+      }
     }
 
     const filtered = docs.filter((d) => {
@@ -1540,39 +2571,57 @@
     );
     const currentMeta = state.dirtyMeta || activeDoc?.meta || {};
     const currentBody = state.dirtyBody !== null ? state.dirtyBody : activeDoc?.body || '';
+    const liveStats = MD.analyzeStats(currentBody);
 
     let workspaceHtml = '<p style="padding:30px; color:var(--text-3);">Nenhum arquivo selecionado.</p>';
+    let inspectorHtml = '<p style="color:var(--text-3); font-size:12px;">Nenhum documento selecionado.</p>';
+
     if (activeDoc) {
       let bodySectionHtml = '';
       if (state.docMode === 'read') {
         bodySectionHtml = `
           <div class="doc-body-scroll" id="readerScroll">
-            <article class="md-article" id="mdArticle">
+            <article class="md-article" id="mdArticle" style="font-size:${state.readerFontSize}px;">
               ${MD.renderMarkdown(currentBody)}
             </article>
           </div>
         `;
       } else if (state.docMode === 'edit') {
-        bodySectionHtml = `
-          <div class="editor-split">
-            <div class="editor-pane">
-              <div class="editor-shortcuts">
-                <button type="button" data-insert="\`[GANCHO]\` ">+ [GANCHO]</button>
-                <button type="button" data-insert="\`[TELA]\` ">+ [TELA]</button>
-                <button type="button" data-insert="\`[B-ROLL]\` ">+ [B-ROLL]</button>
-                <button type="button" data-insert="\`[CORTE]\` ">+ [CORTE]</button>
-                <button type="button" data-insert="\n00:00 — ">+ Timestamp</button>
-                <button type="button" data-insert="\n- [ ] ">+ Checklist</button>
-              </div>
-              <textarea class="md-textarea" id="mdEditorInput" spellcheck="true">${MD.escapeHtml(currentBody)}</textarea>
-            </div>
-            <div class="preview-pane">
-              <article class="md-article" id="mdLivePreview">
-                ${MD.renderMarkdown(currentBody)}
-              </article>
-            </div>
+        const shortcutsHtml = `
+          <div class="editor-shortcuts">
+            <button type="button" data-insert="\`[GANCHO]\` ">+ [GANCHO]</button>
+            <button type="button" data-insert="\`[TELA]\` ">+ [TELA]</button>
+            <button type="button" data-insert="\`[B-ROLL]\` ">+ [B-ROLL]</button>
+            <button type="button" data-insert="\`[CORTE]\` ">+ [CORTE]</button>
+            <button type="button" data-insert="\n00:00 — ">+ Timestamp</button>
+            <button type="button" data-insert="\n- [ ] ">+ Checklist</button>
           </div>
         `;
+        const textareaHtml = `<textarea class="md-textarea" id="mdEditorInput" spellcheck="true" style="font-size:${state.readerFontSize}px;">${MD.escapeHtml(currentBody)}</textarea>`;
+        if (state.editorSplit) {
+          bodySectionHtml = `
+            <div class="editor-split">
+              <div class="editor-pane">
+                ${shortcutsHtml}
+                ${textareaHtml}
+              </div>
+              <div class="preview-pane">
+                <article class="md-article" id="mdLivePreview" style="font-size:${state.readerFontSize}px;">
+                  ${MD.renderMarkdown(currentBody)}
+                </article>
+              </div>
+            </div>
+          `;
+        } else {
+          bodySectionHtml = `
+            <div class="editor-single-pane">
+              ${shortcutsHtml}
+              ${textareaHtml}
+            </div>
+          `;
+        }
+      } else if (state.docMode === 'history') {
+        bodySectionHtml = renderHistoryDiffTab(activeDoc);
       } else {
         bodySectionHtml = `
           <div class="prompter-wrap">
@@ -1597,74 +2646,187 @@
         `;
       }
 
-      const isProtected = activeDoc.path === 'AGENTS.md' || activeDoc.path === 'README.md';
+      const versions = state.versionHistory?.versions || [
+        { name: 'principal', description: 'Arquivo .md principal no workspace', isPrimary: true, headRev: activeDoc.versioning?.headRev || null },
+      ];
+      const activeVerObj = versions.find((v) => v.name === state.activeVersion);
+      const variantBannerHtml =
+        state.activeVersion !== 'principal'
+          ? `
+            <div class="variant-banner">
+              <div>
+                <span>⎇ Versão alternativa ativa: <strong>${MD.escapeHtml(state.activeVersion)}</strong></span>
+                ${activeVerObj?.description ? `<span style="color:var(--text-2); margin-left:6px;">— ${MD.escapeHtml(activeVerObj.description)}</span>` : ''}
+              </div>
+              <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                <button type="button" class="btn-sm" id="varSwitchPrincipalBtn">← Principal</button>
+                <button type="button" class="btn-sm" id="varCompareBtn">Comparar com principal</button>
+                <button type="button" class="btn-sm btn-accent" id="varPromoteBtn">Promover para principal</button>
+                <button type="button" class="btn-sm btn-danger" id="varDeleteBtn">Excluir versão</button>
+              </div>
+            </div>
+          `
+          : '';
+
       workspaceHtml = `
-        <div class="doc-toolbar">
-          <div style="display:flex; align-items:center; gap:10px; min-width:0; flex-wrap:wrap;">
-            <span class="doc-path-chip">${MD.escapeHtml(activeDoc.path)}</span>
+        <div class="doc-toolbar-clean">
+          <div style="display:flex; align-items:center; gap:8px; min-width:0; flex-wrap:wrap;">
+            <button type="button" class="icon-btn-sm${!state.scriptsListCollapsed ? ' is-active' : ''}" id="toggleListBtn" title="Mostrar/ocultar lista de roteiros">◧</button>
+            <span class="doc-path-chip" title="${MD.escapeHtml(activeDoc.path)}">${MD.escapeHtml(activeDoc.path)}${state.hasUnsavedEdits ? ' •' : ''}</span>
             <div class="mode-switch" id="docModeSwitch">
               <button type="button" class="${state.docMode === 'read' ? 'active' : ''}" data-doc-mode="read">Ler</button>
               <button type="button" class="${state.docMode === 'edit' ? 'active' : ''}" data-doc-mode="edit">Editar</button>
               <button type="button" class="${state.docMode === 'prompter' ? 'active' : ''}" data-doc-mode="prompter">Teleprompter</button>
+              <button type="button" class="${state.docMode === 'history' ? 'active' : ''}" data-doc-mode="history">Histórico & Diff</button>
             </div>
           </div>
           <div class="doc-actions">
-            <button type="button" class="btn-sm btn-accent" id="saveDocBtn">Salvar (Ctrl+S)</button>
-            <button type="button" class="btn-sm btn-kdenlive" id="produceKdenliveBtn">▶ Produzir no Kdenlive</button>
+            <div class="zoom-group" title="Tamanho da fonte no leitor e editor">
+              <button type="button" id="fontMinusBtn">A-</button>
+              <span id="fontZoomVal">${state.readerFontSize}px</span>
+              <button type="button" id="fontPlusBtn">A+</button>
+            </div>
+            ${state.docMode === 'edit' ? `<button type="button" class="icon-btn-sm${state.editorSplit ? ' is-active' : ''}" id="toggleSplitBtn" title="Alternar entre Editor Split e Painel Único">${state.editorSplit ? '⫿ Split' : '▭ Único'}</button>` : ''}
+            <button type="button" class="icon-btn-sm${state.focusMode ? ' is-active' : ''}" id="toggleFocusBtn" title="Modo Foco (Esc para sair)">⛶</button>
+            <button type="button" class="btn-sm btn-accent" id="saveDocBtn">Salvar${state.hasUnsavedEdits ? ' •' : ''} (Ctrl+S)</button>
+            <button type="button" class="icon-btn-sm${!state.inspectorCollapsed ? ' is-active' : ''}" id="toggleInspectorBtn" title="Mostrar/ocultar inspetor direito">◨</button>
+          </div>
+        </div>
+        ${variantBannerHtml}
+        ${bodySectionHtml}
+      `;
+
+      const isProtected = activeDoc.path === 'AGENTS.md' || activeDoc.path === 'README.md';
+      const recentRevs = (state.versionHistory?.revisions || []).slice(0, 3);
+      const versionChipsHtml = versions
+        .map(
+          (v) => `
+            <button type="button" class="ver-chip${v.name === state.activeVersion ? ' is-active' : ''}" data-switch-version="${MD.escapeHtml(v.name)}" title="${MD.escapeHtml(v.description || v.name)}">
+              <span class="ver-chip-dot"></span>
+              <span>${MD.escapeHtml(v.name)}</span>
+              ${v.headRev ? `<small style="opacity:0.7; font-family:var(--font-mono);">${MD.escapeHtml(v.headRev)}</small>` : ''}
+            </button>
+          `
+        )
+        .join('');
+
+      const recentCommitsHtml = state.serverMode
+        ? recentRevs.length
+          ? recentRevs
+              .map(
+                (r) => `
+                  <button type="button" class="insp-rev-row" data-insp-rev="${MD.escapeHtml(r.id)}">
+                    <div style="display:flex; justify-content:space-between; gap:6px; font-family:var(--font-mono); font-size:10.5px;">
+                      <strong>${MD.escapeHtml(r.id)}</strong>
+                      <span style="color:var(--accent);">${MD.escapeHtml(r.version || 'principal')}</span>
+                      <span style="color:var(--text-3);">${formatDatePt(String(r.createdAt || '').slice(0, 10))}</span>
+                    </div>
+                    <div style="color:var(--text-2); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${MD.escapeHtml(r.message || '')}</div>
+                  </button>
+                `
+              )
+              .join('')
+          : '<span style="font-size:11px; color:var(--text-3);">Sem commits gravados ainda.</span>'
+        : '<span style="font-size:11px; color:var(--text-3);">Conecte via servidor local para versionamento Git.</span>';
+
+      inspectorHtml = `
+        <div class="insp-section">
+          <div class="insp-title-row">
+            <span class="insp-title">Metadados</span>
+            <span class="status-pill st-${MD.escapeHtml(currentMeta.status || 'ideia')}">${MD.escapeHtml(currentMeta.status || 'ideia')}</span>
+          </div>
+          <div class="insp-meta-grid">
+            <div class="fm-field fm-field-full">
+              <label>Título</label>
+              <input type="text" data-fm="titulo" value="${MD.escapeHtml(currentMeta.titulo || '')}">
+            </div>
+            <div class="fm-field">
+              <label>Status</label>
+              <select data-fm="status">
+                ${['ideia', 'pesquisa', 'roteiro', 'gravando', 'edicao', 'publicado', 'referencia', 'template', 'arquivado']
+                  .map((st) => `<option value="${st}"${currentMeta.status === st ? ' selected' : ''}>${st}</option>`)
+                  .join('')}
+              </select>
+            </div>
+            <div class="fm-field">
+              <label>Série</label>
+              <select data-fm="serie">
+                ${seriesOptions
+                  .map((sr) => `<option value="${MD.escapeHtml(sr)}"${currentMeta.serie === sr ? ' selected' : ''}>${MD.escapeHtml(sr)}</option>`)
+                  .join('')}
+              </select>
+            </div>
+            <div class="fm-field">
+              <label>Duração Est.</label>
+              <input type="text" data-fm="duracao_estimada" value="${MD.escapeHtml(currentMeta.duracao_estimada || '')}">
+            </div>
+            <div class="fm-field">
+              <label>Data Alvo</label>
+              <input type="date" data-fm="data_alvo" value="${MD.escapeHtml(currentMeta.data_alvo || '')}">
+            </div>
+          </div>
+          <div class="insp-stats-row" id="inspStatsRow">
+            <span>${formatNumber(liveStats.words)} pal.</span>
+            <span>~${liveStats.speakMinutes} min fala</span>
+            <span>${liveStats.checksDone}/${liveStats.checksTotal} checks</span>
+          </div>
+        </div>
+
+        <div class="insp-section">
+          <div class="insp-title-row">
+            <span class="insp-title">Versões Alternativas</span>
+            <button type="button" class="kc-move-btn" id="inspNewVersionBtn">+ Nova Versão</button>
+          </div>
+          <div class="version-chip-list">${versionChipsHtml}</div>
+          ${state.activeVersion !== 'principal'
+            ? `
+              <div class="insp-actions-stack" style="margin-top:8px;">
+                <button type="button" class="btn-sm" id="inspCompareVarBtn">Comparar</button>
+                <button type="button" class="btn-sm btn-accent" id="inspPromoteVarBtn">Promover</button>
+              </div>
+            `
+            : ''}
+        </div>
+
+        <div class="insp-section">
+          <div class="insp-title-row">
+            <span class="insp-title">Git do Roteiro</span>
+            <button type="button" class="kc-move-btn" id="inspOpenHistoryBtn">Histórico ↗</button>
+          </div>
+          <input type="text" class="search-box-sm" id="inspCommitMsgInput" placeholder="Mensagem do commit..." value="${MD.escapeHtml(state.commitMessageDraft || '')}" style="height:31px; font-size:11.5px; margin-bottom:6px;">
+          <button type="button" class="btn-sm btn-accent" id="inspCommitSaveBtn" style="width:100%; justify-content:center;">Salvar Commit</button>
+          <div class="insp-rev-mini">${recentCommitsHtml}</div>
+        </div>
+
+        <div class="insp-section">
+          <div class="insp-title-row">
+            <span class="insp-title">Ações & Produção</span>
+          </div>
+          <div class="insp-actions-stack">
+            <button type="button" class="btn-sm btn-kdenlive" id="produceKdenliveBtn" style="grid-column: 1 / -1;">▶ Produzir no Kdenlive</button>
             <button type="button" class="btn-sm" id="copyPromptDocBtn">Prompt Agente</button>
             <button type="button" class="btn-sm" id="downloadDocBtn">Baixar .md</button>
-            ${isProtected ? '' : '<button type="button" class="btn-sm btn-danger" id="deleteDocBtn">Excluir</button>'}
+            ${isProtected ? '' : '<button type="button" class="btn-sm btn-danger" id="deleteDocBtn" style="grid-column: 1 / -1;">Excluir Arquivo</button>'}
           </div>
         </div>
-
-        <div class="frontmatter-bar" id="frontmatterBar">
-          <div class="fm-field" style="grid-column: span 2;">
-            <label>Título</label>
-            <input type="text" data-fm="titulo" value="${MD.escapeHtml(currentMeta.titulo || '')}">
-          </div>
-          <div class="fm-field">
-            <label>Status</label>
-            <select data-fm="status">
-              ${['ideia', 'pesquisa', 'roteiro', 'gravando', 'edicao', 'publicado', 'referencia', 'template', 'arquivado']
-                .map((st) => `<option value="${st}"${currentMeta.status === st ? ' selected' : ''}>${st}</option>`)
-                .join('')}
-            </select>
-          </div>
-          <div class="fm-field">
-            <label>Série</label>
-            <select data-fm="serie">
-              ${seriesOptions
-                .map((sr) => `<option value="${MD.escapeHtml(sr)}"${currentMeta.serie === sr ? ' selected' : ''}>${MD.escapeHtml(sr)}</option>`)
-                .join('')}
-            </select>
-          </div>
-          <div class="fm-field">
-            <label>Duração Est.</label>
-            <input type="text" data-fm="duracao_estimada" value="${MD.escapeHtml(currentMeta.duracao_estimada || '')}">
-          </div>
-          <div class="fm-field">
-            <label>Data Alvo</label>
-            <input type="date" data-fm="data_alvo" value="${MD.escapeHtml(currentMeta.data_alvo || '')}">
-          </div>
-        </div>
-
-        ${bodySectionHtml}
       `;
     }
 
     container.innerHTML = `
-      <section class="scripts-layout">
+      <section class="scripts-layout${state.scriptsListCollapsed ? ' is-list-collapsed' : ''}${state.inspectorCollapsed ? ' is-inspector-collapsed' : ''}">
         <aside class="scripts-sidebar">
           <input type="search" class="search-box-sm" id="scriptsSearchInput" placeholder="Filtrar arquivos .md..." value="${MD.escapeHtml(state.scriptsSearch)}">
           <div class="scripts-filter-row">
             <select class="select-dark" id="scriptsStatusSel" style="height:30px; font-size:11px;">
               <option value="all"${state.scriptsStatusFilter === 'all' ? ' selected' : ''}>Status: Todos</option>
               <option value="gravando"${state.scriptsStatusFilter === 'gravando' ? ' selected' : ''}>Gravando</option>
+              <option value="edicao"${state.scriptsStatusFilter === 'edicao' ? ' selected' : ''}>Edição</option>
               <option value="roteiro"${state.scriptsStatusFilter === 'roteiro' ? ' selected' : ''}>Roteiro</option>
               <option value="ideia"${state.scriptsStatusFilter === 'ideia' ? ' selected' : ''}>Ideia</option>
               <option value="pesquisa"${state.scriptsStatusFilter === 'pesquisa' ? ' selected' : ''}>Pesquisa</option>
               <option value="publicado"${state.scriptsStatusFilter === 'publicado' ? ' selected' : ''}>Publicado</option>
               <option value="referencia"${state.scriptsStatusFilter === 'referencia' ? ' selected' : ''}>Referência</option>
+              <option value="template"${state.scriptsStatusFilter === 'template' ? ' selected' : ''}>Template</option>
             </select>
             <select class="select-dark" id="scriptsFolderSel" style="height:30px; font-size:11px;">
               <option value="all"${state.scriptsFolderFilter === 'all' ? ' selected' : ''}>Pasta: Todas</option>
@@ -1696,6 +2858,10 @@
         <div class="doc-workspace">
           ${workspaceHtml}
         </div>
+
+        <aside class="doc-inspector">
+          ${inspectorHtml}
+        </aside>
       </section>
     `;
 
@@ -1719,28 +2885,117 @@
 
     container.querySelectorAll('[data-select-doc]').forEach((btn) => {
       btn.onclick = () => {
+        if (
+          state.hasUnsavedEdits &&
+          btn.dataset.selectDoc !== state.selectedDocPath &&
+          !confirm('Você tem alterações não salvas neste documento. Descartar e abrir o outro arquivo?')
+        ) {
+          return;
+        }
         stopPrompter();
         state.selectedDocPath = btn.dataset.selectDoc;
+        state.activeVersion = 'principal';
+        state.versionHistory = null;
+        state.versionFetchedKey = '';
+        state.diffDocPath = '';
+        state.diffFromRef = null;
+        state.diffToRef = null;
+        state.diffResult = null;
+        state.selectedRevPreview = null;
+        state.revPreviewContent = null;
         state.dirtyBody = null;
         state.dirtyMeta = null;
+        state.hasUnsavedEdits = false;
+        state.commitMessageDraft = '';
+        syncBrowserUrl({ replace: false });
+        updateHeaderChrome();
         renderScriptsView(container);
       };
     });
 
     if (!activeDoc) return;
 
+    const toggleListBtn = document.getElementById('toggleListBtn');
+    if (toggleListBtn) {
+      toggleListBtn.onclick = () => {
+        state.scriptsListCollapsed = !state.scriptsListCollapsed;
+        renderScriptsView(container);
+      };
+    }
+
+    const toggleInspBtn = document.getElementById('toggleInspectorBtn');
+    if (toggleInspBtn) {
+      toggleInspBtn.onclick = () => {
+        state.inspectorCollapsed = !state.inspectorCollapsed;
+        renderScriptsView(container);
+      };
+    }
+
+    const toggleSplitBtn = document.getElementById('toggleSplitBtn');
+    if (toggleSplitBtn) {
+      toggleSplitBtn.onclick = () => {
+        state.editorSplit = !state.editorSplit;
+        renderScriptsView(container);
+      };
+    }
+
+    const toggleFocusBtn = document.getElementById('toggleFocusBtn');
+    if (toggleFocusBtn) {
+      toggleFocusBtn.onclick = () => {
+        state.focusMode = !state.focusMode;
+        syncBrowserUrl({ replace: true });
+        updateHeaderChrome();
+        renderScriptsView(container);
+      };
+    }
+
+    const applyFontSize = (nextSize) => {
+      state.readerFontSize = Math.min(24, Math.max(13, nextSize));
+      const prefs = loadJsonStorage(STORAGE_KEY_PREFS, {});
+      prefs.readerFontSize = state.readerFontSize;
+      saveJsonStorage(STORAGE_KEY_PREFS, prefs);
+      const valSpan = document.getElementById('fontZoomVal');
+      if (valSpan) valSpan.textContent = `${state.readerFontSize}px`;
+      const artEl = document.getElementById('mdArticle');
+      if (artEl) artEl.style.fontSize = `${state.readerFontSize}px`;
+      const edEl = document.getElementById('mdEditorInput');
+      if (edEl) edEl.style.fontSize = `${state.readerFontSize}px`;
+      const prevEl = document.getElementById('mdLivePreview');
+      if (prevEl) prevEl.style.fontSize = `${state.readerFontSize}px`;
+    };
+    const fontMinusBtn = document.getElementById('fontMinusBtn');
+    if (fontMinusBtn) fontMinusBtn.onclick = () => applyFontSize(state.readerFontSize - 1);
+    const fontPlusBtn = document.getElementById('fontPlusBtn');
+    if (fontPlusBtn) fontPlusBtn.onclick = () => applyFontSize(state.readerFontSize + 1);
+
     container.querySelectorAll('#docModeSwitch button').forEach((btn) => {
       btn.onclick = () => {
         stopPrompter();
         state.docMode = btn.dataset.docMode;
+        syncBrowserUrl({ replace: true });
         renderScriptsView(container);
+        if (
+          state.docMode === 'history' &&
+          state.serverMode &&
+          !state.diffResult &&
+          !state.selectedRevPreview &&
+          state.diffFromRef &&
+          state.diffToRef
+        ) {
+          loadDiffForDoc(activeDoc.path, state.diffFromRef, state.diffToRef);
+        }
       };
     });
 
     container.querySelectorAll('[data-fm]').forEach((el) => {
-      el.onchange = () => {
+      const updateMetaField = () => {
         state.dirtyMeta = { ...(state.dirtyMeta || activeDoc.meta), [el.dataset.fm]: el.value };
+        state.hasUnsavedEdits = true;
       };
+      el.onchange = updateMetaField;
+      if (el.tagName === 'INPUT' && el.type === 'text') {
+        el.oninput = updateMetaField;
+      }
     });
 
     const article = document.getElementById('mdArticle');
@@ -1751,12 +3006,22 @@
           const baseBody = state.dirtyBody !== null ? state.dirtyBody : activeDoc.body;
           const updatedBody = MD.toggleCheckboxInMarkdown(baseBody, idx);
           state.dirtyBody = updatedBody;
+          const activeVer = state.activeVersion || 'principal';
           const metaToSave = { ...(state.dirtyMeta || activeDoc.meta) };
           const fullRaw = MD.serializeFrontmatter(metaToSave, updatedBody);
           try {
-            await persistSaveDoc(activeDoc.path, fullRaw);
-            state.dirtyBody = null;
-            state.dirtyMeta = null;
+            await persistSaveDoc(activeDoc.path, fullRaw, null, {
+              version: activeVer,
+              commitMessage: 'Checklist atualizado no leitor',
+            });
+            state.hasUnsavedEdits = false;
+            if (activeVer === 'principal') {
+              state.dirtyBody = null;
+              state.dirtyMeta = null;
+            } else {
+              state.dirtyMeta = metaToSave;
+              state.dirtyBody = updatedBody;
+            }
             updateHeaderChrome();
             renderScriptsView(container);
             showToast(state.serverMode ? 'Checkbox salvo direto no arquivo .md!' : 'Checkbox atualizado no rascunho local.');
@@ -1773,8 +3038,19 @@
           const found = docs.find((d) => d.path === resolved);
           if (found) {
             state.selectedDocPath = found.path;
+            state.activeVersion = 'principal';
+            state.versionHistory = null;
+            state.versionFetchedKey = '';
+            state.diffDocPath = '';
+            state.diffResult = null;
+            state.selectedRevPreview = null;
+            state.revPreviewContent = null;
             state.dirtyBody = null;
             state.dirtyMeta = null;
+            state.hasUnsavedEdits = false;
+            state.commitMessageDraft = '';
+            syncBrowserUrl({ replace: false });
+            updateHeaderChrome();
             renderScriptsView(container);
           } else {
             showToast(`Arquivo não encontrado neste canal: ${resolved}`);
@@ -1792,7 +3068,13 @@
     if (editorInput) {
       editorInput.oninput = () => {
         state.dirtyBody = editorInput.value;
+        state.hasUnsavedEdits = true;
         if (livePreview) livePreview.innerHTML = MD.renderMarkdown(editorInput.value);
+        const statsEl = document.getElementById('inspStatsRow');
+        if (statsEl) {
+          const st = MD.analyzeStats(editorInput.value);
+          statsEl.innerHTML = `<span>${formatNumber(st.words)} pal.</span><span>~${st.speakMinutes} min fala</span><span>${st.checksDone}/${st.checksTotal} checks</span>`;
+        }
       };
 
       container.querySelectorAll('[data-insert]').forEach((btn) => {
@@ -1812,6 +3094,93 @@
     const saveBtn = document.getElementById('saveDocBtn');
     if (saveBtn) saveBtn.onclick = () => saveCurrentDoc();
 
+    const inspCommitInp = document.getElementById('inspCommitMsgInput');
+    if (inspCommitInp) {
+      inspCommitInp.oninput = () => {
+        state.commitMessageDraft = inspCommitInp.value;
+      };
+      inspCommitInp.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          saveCurrentDoc();
+        }
+      };
+    }
+
+    const inspCommitBtn = document.getElementById('inspCommitSaveBtn');
+    if (inspCommitBtn) inspCommitBtn.onclick = () => saveCurrentDoc();
+
+    const inspOpenHistBtn = document.getElementById('inspOpenHistoryBtn');
+    if (inspOpenHistBtn) {
+      inspOpenHistBtn.onclick = () => {
+        stopPrompter();
+        state.docMode = 'history';
+        syncBrowserUrl({ replace: true });
+        renderScriptsView(container);
+        if (state.serverMode && !state.diffResult && !state.selectedRevPreview && state.diffFromRef && state.diffToRef) {
+          loadDiffForDoc(activeDoc.path, state.diffFromRef, state.diffToRef);
+        }
+      };
+    }
+
+    container.querySelectorAll('[data-insp-rev]').forEach((btn) => {
+      btn.onclick = () => {
+        if (!state.serverMode) {
+          showToast('Histórico Git requer o servidor local.');
+          return;
+        }
+        stopPrompter();
+        state.docMode = 'history';
+        syncBrowserUrl({ replace: true });
+        loadRevisionPreview(activeDoc.path, btn.dataset.inspRev);
+      };
+    });
+
+    const inspNewVerBtn = document.getElementById('inspNewVersionBtn');
+    if (inspNewVerBtn) inspNewVerBtn.onclick = () => openNewVersionModal(activeDoc);
+
+    container.querySelectorAll('[data-switch-version]').forEach((btn) => {
+      btn.onclick = () => {
+        const verName = btn.dataset.switchVersion;
+        if (verName === state.activeVersion) return;
+        if (state.hasUnsavedEdits && !confirm('Você tem alterações não salvas. Descartar e trocar de versão?')) {
+          return;
+        }
+        switchDocVersion(activeDoc.path, verName);
+      };
+    });
+
+    const goCompareVariant = () => {
+      if (!state.serverMode) {
+        showToast('Comparação de versões requer o servidor local.');
+        return;
+      }
+      stopPrompter();
+      state.docMode = 'history';
+      syncBrowserUrl({ replace: true });
+      loadDiffForDoc(activeDoc.path, 'ver:principal', `ver:${state.activeVersion}`);
+    };
+
+    const varSwitchBtn = document.getElementById('varSwitchPrincipalBtn');
+    if (varSwitchBtn) {
+      varSwitchBtn.onclick = () => {
+        if (state.hasUnsavedEdits && !confirm('Descartar alterações não salvas e voltar para a versão principal?')) return;
+        switchDocVersion(activeDoc.path, 'principal');
+      };
+    }
+    const varCmpBtn = document.getElementById('varCompareBtn');
+    if (varCmpBtn) varCmpBtn.onclick = goCompareVariant;
+    const inspCmpBtn = document.getElementById('inspCompareVarBtn');
+    if (inspCmpBtn) inspCmpBtn.onclick = goCompareVariant;
+
+    const varPromBtn = document.getElementById('varPromoteBtn');
+    if (varPromBtn) varPromBtn.onclick = () => promoteDocVersion(activeDoc.path, state.activeVersion);
+    const inspPromBtn = document.getElementById('inspPromoteVarBtn');
+    if (inspPromBtn) inspPromBtn.onclick = () => promoteDocVersion(activeDoc.path, state.activeVersion);
+
+    const varDelBtn = document.getElementById('varDeleteBtn');
+    if (varDelBtn) varDelBtn.onclick = () => deleteDocVersion(activeDoc.path, state.activeVersion);
+
     const kdenliveBtn = document.getElementById('produceKdenliveBtn');
     if (kdenliveBtn) kdenliveBtn.onclick = () => openKdenliveModal(activeDoc);
 
@@ -1828,8 +3197,10 @@
     if (promptBtn) {
       promptBtn.onclick = () => {
         const ch = chData.channel || {};
-        const prompt = `Leia o arquivo "${activeDoc.path}" no workspace ${chData.workspacePath || ch.name} seguindo o AGENTS.md. Refine o gancho inicial (00:00–00:40), sugira 3 títulos A/B no estilo de ${ch.handle || ch.name}, extraia 2 cortes para 03-shorts/ e rode npm run sync no Crom YouTube Studio ao final.`;
-        copyText(prompt, 'Prompt pronto para colar no agente!');
+        const wsPath = chData.workspacePath || ch.name;
+        const activeVer = state.activeVersion || 'principal';
+        const prompt = `Leia AGENTS.md e "${activeDoc.path}" no workspace ${wsPath} (canal ${chData.key}). Nunca sobrescreva fora do versionamento Git: após editar, grave com \`./bin/crom-studio roteiro commit --canal ${chData.key} --arquivo "${activeDoc.path}" --versao ${activeVer} --autor "Agente" --msg "Resumo da revisão" --stdin\` (ou crie variante com \`./bin/crom-studio roteiro nova-versao --canal ${chData.key} --arquivo "${activeDoc.path}" --nome "v2-alternativa" --autor "Agente" --stdin\`).`;
+        copyText(prompt, 'Prompt Git-safe pronto para colar no agente!');
       };
     }
 
@@ -1840,8 +3211,14 @@
         try {
           await persistDeleteDoc(activeDoc.path);
           state.selectedDocPath = getActiveChannelData().docs[0]?.path || null;
+          state.activeVersion = 'principal';
+          state.versionHistory = null;
+          state.versionFetchedKey = '';
+          state.diffResult = null;
           state.dirtyBody = null;
           state.dirtyMeta = null;
+          state.hasUnsavedEdits = false;
+          state.commitMessageDraft = '';
           updateHeaderChrome();
           renderScriptsView(container);
           showToast('Arquivo excluído.');
@@ -1851,17 +3228,22 @@
       };
     }
 
+    if (state.docMode === 'history') {
+      bindHistoryDiffEvents(activeDoc, container);
+    }
     bindPrompterEvents();
   }
 
   async function saveCurrentDoc() {
     const activeDoc = getActiveDoc();
     if (!activeDoc) return;
+    const activeVersion = state.activeVersion || 'principal';
+    const commitMessage = (state.commitMessageDraft || '').trim();
     const meta = { ...(state.dirtyMeta || activeDoc.meta) };
     const body = state.dirtyBody !== null ? state.dirtyBody : activeDoc.body;
 
     let newPath = null;
-    if (activeDoc.topFolder === '02-roteiros') {
+    if (activeVersion === 'principal' && activeDoc.topFolder === '02-roteiros') {
       let targetSub = null;
       if (['roteiro', 'pesquisa', 'ideia'].includes(meta.status)) targetSub = '02-roteiros/rascunhos';
       else if (['gravando', 'edicao'].includes(meta.status)) targetSub = '02-roteiros/em-producao';
@@ -1873,14 +3255,28 @@
 
     const fullRaw = MD.serializeFrontmatter(meta, body);
     try {
-      const finalPath = await persistSaveDoc(activeDoc.path, fullRaw, newPath);
-      state.dirtyBody = null;
-      state.dirtyMeta = null;
+      const finalPath = await persistSaveDoc(activeDoc.path, fullRaw, newPath, {
+        version: activeVersion,
+        commitMessage,
+      });
+      state.hasUnsavedEdits = false;
+      state.commitMessageDraft = '';
+      if (activeVersion === 'principal') {
+        state.dirtyBody = null;
+        state.dirtyMeta = null;
+      } else {
+        state.dirtyMeta = meta;
+        state.dirtyBody = body;
+      }
+      state.versionFetchedKey = `${state.activeChannel}::${finalPath}`;
+      state.diffResult = null;
       updateHeaderChrome();
       renderCurrentView();
       showToast(
         state.serverMode
-          ? `Salvo em ${finalPath}!`
+          ? activeVersion === 'principal'
+            ? `Salvo em ${finalPath}!`
+            : `Versão "${activeVersion}" salva no histórico de ${finalPath}!`
           : `Salvo no rascunho local (${finalPath}). Use "Baixar .md" ou inicie o servidor.`
       );
     } catch (err) {
@@ -2660,20 +4056,20 @@
 
     const prompts = [
       {
+        title: 'Editar Roteiro via Git (Dinâmica 1 — Nunca sobrescrever direto)',
+        text: `Leia ${wsPath}/AGENTS.md e ${wsPath}/../00-VERSIONAMENTO-ROTEIROS.md. Revise "${targetPath}" (canal ${chData.key}) preservando o histórico e salve como revisão Git: crom-studio roteiro commit --canal ${chData.key} --arquivo "${targetPath}" --versao principal --autor "Agente" --msg "Resumo do ajuste" --stdin`,
+      },
+      {
+        title: 'Criar Versão Alternativa / Variante (Dinâmica 2)',
+        text: `Leia ${wsPath}/AGENTS.md e "${targetPath}". Crie uma versão alternativa sem alterar a principal via: crom-studio roteiro nova-versao --canal ${chData.key} --arquivo "${targetPath}" --nome "v2-enxuta" --desc "Abordagem alternativa mais curta" --autor "Agente" --stdin`,
+      },
+      {
         title: 'Escrever Roteiro Longo a partir de uma Ficha/Série',
-        text: `Leia AGENTS.md e "${targetPath}" em ${wsPath}. Crie um roteiro longo completo em 02-roteiros/rascunhos/ mantendo o esquema YAML e o tom do canal ${channel.handle || channel.name}, com gancho de 0–45s, 3 opções de título A/B e marcações [TELA]/[B-ROLL]. Depois rode: npm run sync (no Crom YouTube Studio).`,
+        text: `Leia AGENTS.md e "${targetPath}" em ${wsPath}. Crie um roteiro longo completo em 02-roteiros/rascunhos/ ou na pasta da série mantendo o esquema YAML e o tom de ${channel.handle || channel.name}. Depois rode: crom-studio --sync.`,
       },
       {
         title: 'Levar Roteiro para a Esteira Kdenlive + MCP',
         text: `Leia "${targetPath}" em ${wsPath} e siga PROCESSO-NOVO-VIDEO.md no diretório Kdenlive. Inicialize o projeto com ./criar_video.sh --canal ${chData.key} <slug> e monte a timeline usando o MCP kdenlive-mcp-plus.`,
-      },
-      {
-        title: 'Gerar 2–3 Shorts de um Roteiro Existente',
-        text: `Leia "${targetPath}" em ${wsPath}. Extraia 2 roteiros curtos de 40–50 segundos com gancho seco e salve em 03-shorts/. Ao finalizar, sincronize o painel com: npm run sync.`,
-      },
-      {
-        title: 'Revisar Gancho & Otimizar Retenção (00:00–00:45)',
-        text: `Revise os primeiros 45 segundos de "${targetPath}" em ${wsPath}. Quero corte imediato na prova visual, zero enrolação e 5 variações de título com alto CTR. Atualize o arquivo e rode npm run sync.`,
       },
     ];
 
@@ -2752,8 +4148,697 @@
   }
 
   /* =========================================================
-     MODAIS: CRIAR DOCUMENTO, BUSCA (Ctrl+K) & NOTIFICAÇÕES
+     VIEW 8: CONFIGURAÇÕES DO WORKSPACE
   ========================================================= */
+  async function loadSettingsConfig({ force = false } = {}) {
+    if (!state.serverMode) return null;
+    if (!force && state.settingsLoading) return state.settingsConfig;
+    state.settingsLoading = true;
+    state.settingsError = null;
+    try {
+      const res = await fetch('/api/config', { cache: 'no-store' });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Erro ao carregar configurações');
+      state.settingsConfig = json.config;
+      if (!state.settingsChannelKey || !state.settingsConfig?.channels?.[state.settingsChannelKey]) {
+        state.settingsChannelKey = state.settingsConfig?.channels?.[state.activeChannel]
+          ? state.activeChannel
+          : (state.settingsConfig?.defaultChannel || state.settingsConfig?.channelOrder?.[0] || null);
+      }
+      return state.settingsConfig;
+    } catch (err) {
+      state.settingsError = err.message;
+      return null;
+    } finally {
+      state.settingsLoading = false;
+      if (state.view === 'settings') {
+        renderSettingsView(document.getElementById('viewContainer'));
+      }
+    }
+  }
+
+  function renderSettingsView(container) {
+    if (!container) return;
+
+    if (!state.serverMode) {
+      container.innerHTML = `
+        <section class="settings-layout">
+          <div class="settings-card">
+            <div class="settings-card-head">
+              <h3>Configurações do Workspace</h3>
+              <span class="settings-path-badge is-miss">Modo Standalone</span>
+            </div>
+            <p style="margin:0; font-size:13px; color:var(--text-2); line-height:1.6;">
+              A edição de workspaces, pastas locais, banners, links e configurações em <code>config.local.json</code> está disponível apenas com o servidor local ativo:
+              <code>./bin/crom-studio --tray</code> (ou <code>npm start</code>).
+            </p>
+            <div class="settings-form-grid" style="margin-top:6px;">
+              <div class="settings-toggle-row settings-field-full">
+                <span>Fluxo de Cores Dinâmico</span>
+                <label class="switch-inline">
+                  <input type="checkbox" id="setColorDynamic"${state.color.dynamic ? ' checked' : ''}>
+                  <span>Ativo</span>
+                </label>
+              </div>
+              <div class="settings-toggle-row settings-field-full">
+                <span>Fonte do Leitor / Editor</span>
+                <div class="zoom-group">
+                  <button type="button" id="setFontMinusBtn">A-</button>
+                  <span id="setFontVal">${state.readerFontSize}px</span>
+                  <button type="button" id="setFontPlusBtn">A+</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      `;
+      const dynChk = document.getElementById('setColorDynamic');
+      if (dynChk) {
+        dynChk.onchange = (e) => {
+          state.color.dynamic = e.target.checked;
+          ColorFlowEngine.savePrefs();
+          ColorFlowEngine.applyCurrent(performance.now());
+          ColorFlowEngine.renderMenu();
+        };
+      }
+      const minusBtn = document.getElementById('setFontMinusBtn');
+      const plusBtn = document.getElementById('setFontPlusBtn');
+      const setFont = (next) => {
+        state.readerFontSize = Math.min(24, Math.max(13, next));
+        const prefs = loadJsonStorage(STORAGE_KEY_PREFS, {});
+        prefs.readerFontSize = state.readerFontSize;
+        saveJsonStorage(STORAGE_KEY_PREFS, prefs);
+        const val = document.getElementById('setFontVal');
+        if (val) val.textContent = `${state.readerFontSize}px`;
+      };
+      if (minusBtn) minusBtn.onclick = () => setFont(state.readerFontSize - 1);
+      if (plusBtn) plusBtn.onclick = () => setFont(state.readerFontSize + 1);
+      return;
+    }
+
+    if (!state.settingsConfig && !state.settingsError) {
+      if (!state.settingsLoading) loadSettingsConfig();
+      container.innerHTML = `<div class="settings-card"><p style="margin:0; color:var(--text-3);">Carregando configurações do Studio...</p></div>`;
+      return;
+    }
+
+    if (state.settingsError && !state.settingsConfig) {
+      container.innerHTML = `
+        <div class="settings-card">
+          <div class="settings-card-head"><h3>Erro ao carregar configurações</h3></div>
+          <p style="margin:0; color:var(--danger);">${MD.escapeHtml(state.settingsError)}</p>
+          <div><button type="button" class="btn-sm btn-accent" id="retrySettingsBtn">Tentar novamente</button></div>
+        </div>
+      `;
+      const retryBtn = document.getElementById('retrySettingsBtn');
+      if (retryBtn) retryBtn.onclick = () => loadSettingsConfig({ force: true });
+      return;
+    }
+
+    const cfg = state.settingsConfig;
+    const order = cfg.channelOrder || Object.keys(cfg.channels || {});
+    if (!state.settingsChannelKey || !cfg.channels[state.settingsChannelKey]) {
+      state.settingsChannelKey = cfg.channels[state.activeChannel]
+        ? state.activeChannel
+        : (cfg.defaultChannel || order[0]);
+    }
+    const selectedKey = state.settingsChannelKey;
+    const ch = cfg.channels[selectedKey] || {};
+    const seriesItems = Array.isArray(ch.seriesList) ? ch.seriesList : [];
+    const spotSet = new Set(Array.isArray(ch.spotlightSeries) ? ch.spotlightSeries : []);
+    const allCheckboxSeries = Array.from(new Set([...seriesItems, ...spotSet]));
+    const links = ch.links || {};
+    const initials = getChannelInitials(ch);
+
+    const tabsHtml = order
+      .map((k) => {
+        const item = cfg.channels[k] || {};
+        const isAct = k === selectedKey;
+        const isPaused = item.status === 'pausado';
+        const isHidden = item.status === 'oculto';
+        return `
+          <button type="button" class="settings-ws-tab${isAct ? ' is-active' : ''}" data-settings-tab="${MD.escapeHtml(k)}">
+            <span>${MD.escapeHtml(item.name || k)}</span>
+            <span style="font-family:var(--font-mono); font-size:10.5px; color:var(--text-3);">${MD.escapeHtml(k)}</span>
+            ${isHidden ? '' : `<span class="channel-status-badge ${isPaused ? 'is-pausado' : 'is-ativo'}">${MD.escapeHtml(item.statusLabel || (isPaused ? 'PAUSADO' : 'ATIVO'))}</span>`}
+          </button>
+        `;
+      })
+      .join('');
+
+    container.innerHTML = `
+      <section class="settings-layout">
+        <div class="section-subhead" style="margin:0;">
+          <div class="settings-ws-tabs">${tabsHtml}</div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button type="button" class="btn-sm" id="settingsNewWsBtn">+ Novo Workspace</button>
+            <button type="button" class="btn-primary" id="settingsSaveBtn">💾 Salvar Configurações</button>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <!-- Card 1: Identidade, Status & Métricas -->
+          <div class="settings-card">
+            <div class="settings-card-head">
+              <h3>1. Identidade, Status & Métricas</h3>
+              <span style="font-family:var(--font-mono); font-size:11px; color:var(--text-3);">chave: ${MD.escapeHtml(selectedKey)}</span>
+            </div>
+
+            <div class="settings-avatar-preview">
+              <img id="setAvatarPreview" src="${MD.escapeHtml(ch.avatar || '')}" alt="${MD.escapeHtml(ch.name || selectedKey)}" referrerpolicy="no-referrer" style="${ch.avatar ? '' : 'display:none;'}" onerror="this.style.display='none'; document.getElementById('setAvatarFallback').style.display='grid';">
+              <div id="setAvatarFallback" style="width:44px; height:44px; border-radius:999px; background:rgba(var(--accent-rgb),0.2); border:1px solid var(--border-strong); display:${ch.avatar ? 'none' : 'grid'}; place-items:center; font-weight:700; flex-shrink:0;">${MD.escapeHtml(initials)}</div>
+              <div style="min-width:0; flex:1;">
+                <div style="font-weight:600; font-size:13.5px;" id="setPreviewName">${MD.escapeHtml(ch.name || selectedKey)}</div>
+                <div style="font-family:var(--font-mono); font-size:11px; color:var(--text-3);" id="setPreviewHandle">${MD.escapeHtml(ch.handle || '')}</div>
+              </div>
+            </div>
+
+            <div class="settings-form-grid">
+              <label>
+                <span>Nome de exibição</span>
+                <input type="text" id="setWsName" value="${MD.escapeHtml(ch.name || '')}">
+              </label>
+              <label>
+                <span>Handle (@canal)</span>
+                <input type="text" id="setWsHandle" value="${MD.escapeHtml(ch.handle || '')}">
+              </label>
+              <label>
+                <span>YouTube Channel ID</span>
+                <input type="text" id="setWsChannelId" value="${MD.escapeHtml(ch.channelId || '')}" placeholder="UC...">
+              </label>
+              <label>
+                <span>URL do Canal</span>
+                <input type="text" id="setWsUrl" value="${MD.escapeHtml(ch.url || '')}">
+              </label>
+              <label class="settings-field-full">
+                <span>URL do Avatar</span>
+                <input type="text" id="setWsAvatar" value="${MD.escapeHtml(ch.avatar || '')}" placeholder="https://...">
+              </label>
+              <label class="settings-field-full">
+                <span>Bio / Descrição</span>
+                <textarea id="setWsBio" rows="2">${MD.escapeHtml(ch.bio || '')}</textarea>
+              </label>
+              <label>
+                <span>Status</span>
+                <select id="setWsStatus">
+                  <option value="ativo"${ch.status === 'ativo' ? ' selected' : ''}>Ativo</option>
+                  <option value="pausado"${ch.status === 'pausado' ? ' selected' : ''}>Pausado / Offline</option>
+                  <option value="oculto"${ch.status === 'oculto' ? ' selected' : ''}>Oculto (sem badge/ponto)</option>
+                </select>
+              </label>
+              <label>
+                <span>Rótulo do Status (statusLabel)</span>
+                <input type="text" id="setWsStatusLabel" value="${MD.escapeHtml(ch.statusLabel || '')}" placeholder="Ex.: Ativo, Pausado...">
+              </label>
+              <label>
+                <span>Inscritos</span>
+                <input type="number" id="setWsSubscribers" min="0" value="${Number(ch.subscribers || 0)}">
+              </label>
+              <label>
+                <span>Total de Vídeos Públicos</span>
+                <input type="number" id="setWsTotalVideos" min="0" value="${ch.totalVideos !== null && ch.totalVideos !== undefined ? Number(ch.totalVideos) : ''}" placeholder="auto">
+              </label>
+            </div>
+          </div>
+
+          <!-- Card 2: Banner da Visão Geral -->
+          <div class="settings-card">
+            <div class="settings-card-head">
+              <h3>2. Banner da Visão Geral</h3>
+            </div>
+            <div class="settings-toggle-row">
+              <div>
+                <div style="font-size:12.5px; font-weight:600; color:var(--text-1);">Exibir banner na Visão Geral</div>
+                <div style="font-size:11px; color:var(--text-3);">Mostra aviso ou destaque configurável no topo do Dashboard deste workspace.</div>
+              </div>
+              <label class="switch-inline">
+                <input type="checkbox" id="setBannerEnabled"${ch.bannerEnabled ? ' checked' : ''}>
+                <span>Ativado</span>
+              </label>
+            </div>
+            <div class="settings-form-grid">
+              <label>
+                <span>Badge do Banner</span>
+                <input type="text" id="setBannerBadge" value="${MD.escapeHtml(ch.bannerBadge || '')}" placeholder="Ex.: PAUSADO, NOVO...">
+              </label>
+              <label>
+                <span>Doc vinculado (opcional)</span>
+                <input type="text" id="setBannerDocPath" value="${MD.escapeHtml(ch.bannerDocPath || '')}" placeholder="Ex.: 00-canal/identidade-e-status.md">
+              </label>
+              <label class="settings-field-full">
+                <span>Título do Banner</span>
+                <input type="text" id="setBannerTitle" value="${MD.escapeHtml(ch.bannerTitle || '')}" placeholder="Título principal exibido no banner">
+              </label>
+              <label class="settings-field-full">
+                <span>Subtítulo / Descrição do Banner</span>
+                <textarea id="setBannerSubtitle" rows="3" placeholder="Detalhes contextuais do banner...">${MD.escapeHtml(ch.bannerSubtitle || '')}</textarea>
+              </label>
+            </div>
+          </div>
+
+          <!-- Card 3: Pastas, Séries & Links -->
+          <div class="settings-card">
+            <div class="settings-card-head">
+              <h3>3. Pastas, Séries & Links</h3>
+              <span class="settings-path-badge ${ch.workspaceExists ? 'is-ok' : 'is-miss'}">${ch.workspaceExists ? '✓ Pasta no disco OK' : '✕ Pasta não encontrada'}</span>
+            </div>
+            <div class="settings-form-grid">
+              <label class="settings-field-full">
+                <span>Caminho da Pasta do Workspace</span>
+                <input type="text" id="setWsPath" value="${MD.escapeHtml(ch.workspacePathRaw || ch.workspacePath || '')}" required>
+              </label>
+              <label class="settings-field-full">
+                <span>Subpasta Kdenlive</span>
+                <input type="text" id="setWsKdenliveFolder" value="${MD.escapeHtml(ch.kdenliveFolder || 'videos')}">
+              </label>
+              <label class="settings-field-full">
+                <span>Séries do Workspace (uma por linha)</span>
+                <textarea id="setWsSeriesList" rows="4">${MD.escapeHtml(seriesItems.join('\n'))}</textarea>
+              </label>
+              <div class="settings-field-full">
+                <span>Séries em Destaque na Visão Geral (Spotlight)</span>
+                <div class="settings-series-checks" id="setSpotlightChecks">
+                  ${allCheckboxSeries.length
+                    ? allCheckboxSeries
+                        .map(
+                          (s) => `
+                            <label class="settings-series-chk">
+                              <input type="checkbox" name="setSpotlightSerie" value="${MD.escapeHtml(s)}"${spotSet.has(s) ? ' checked' : ''}>
+                              <span>${MD.escapeHtml(s)}</span>
+                            </label>
+                          `
+                        )
+                        .join('')
+                    : '<span style="font-size:11.5px; color:var(--text-3);">Adicione séries acima para selecionar destaques.</span>'}
+                </div>
+              </div>
+              <label>
+                <span>GitHub</span>
+                <input type="text" id="setLinkGithub" value="${MD.escapeHtml(links.github || '')}" placeholder="https://github.com/...">
+              </label>
+              <label>
+                <span>Hub / Site</span>
+                <input type="text" id="setLinkHub" value="${MD.escapeHtml(links.hub || '')}" placeholder="https://...">
+              </label>
+              <label>
+                <span>TabNews</span>
+                <input type="text" id="setLinkTabnews" value="${MD.escapeHtml(links.tabnews || '')}">
+              </label>
+              <label>
+                <span>Medium</span>
+                <input type="text" id="setLinkMedium" value="${MD.escapeHtml(links.medium || '')}">
+              </label>
+              <label>
+                <span>TikTok</span>
+                <input type="text" id="setLinkTiktok" value="${MD.escapeHtml(links.tiktok || '')}">
+              </label>
+              <label>
+                <span>X / Twitter</span>
+                <input type="text" id="setLinkX" value="${MD.escapeHtml(links.x || '')}">
+              </label>
+            </div>
+          </div>
+
+          <!-- Card 4: Global & Aparência -->
+          <div class="settings-card">
+            <div class="settings-card-head">
+              <h3>4. Global & Aparência</h3>
+              <span style="font-family:var(--font-mono); font-size:11px; color:var(--text-3);">${MD.escapeHtml(cfg.writableFile || 'config.local.json')}</span>
+            </div>
+            <div class="settings-form-grid">
+              <label>
+                <span>Workspace Padrão</span>
+                <select id="setDefaultChannel">
+                  ${order
+                    .map((k) => `<option value="${MD.escapeHtml(k)}"${cfg.defaultChannel === k ? ' selected' : ''}>${MD.escapeHtml(cfg.channels[k]?.name || k)} (${MD.escapeHtml(k)})</option>`)
+                    .join('')}
+                </select>
+              </label>
+              <div>
+                <span>Status da Fábrica Kdenlive</span>
+                <div style="padding-top:4px;">
+                  <span class="settings-path-badge ${cfg.kdenliveExists ? 'is-ok' : 'is-miss'}">${cfg.kdenliveExists ? '✓ Kdenlive encontrado' : '✕ Pasta Kdenlive ausente'}</span>
+                </div>
+              </div>
+              <label class="settings-field-full">
+                <span>Kdenlive Root (kdenliveRoot)</span>
+                <input type="text" id="setKdenliveRoot" value="${MD.escapeHtml(cfg.kdenliveRootRaw || cfg.kdenliveRoot || '')}">
+              </label>
+              <label>
+                <span>Host</span>
+                <input type="text" id="setHost" value="${MD.escapeHtml(cfg.host || '127.0.0.1')}">
+              </label>
+              <label>
+                <span>Porta</span>
+                <input type="number" id="setPort" min="1024" max="65535" value="${Number(cfg.port || 4173)}">
+              </label>
+            </div>
+
+            <div class="settings-toggle-row" id="settingsRestartAlert" style="background:rgba(245,185,66,0.08); border-color:rgba(245,185,66,0.28); font-size:11.5px; color:#ffd479;">
+              <span>Alterações em <strong>Host</strong> ou <strong>Porta</strong> exigem reiniciar o servidor para entrar em vigor.</span>
+            </div>
+
+            <div class="settings-toggle-row">
+              <div>
+                <div style="font-size:12.5px; font-weight:600; color:var(--text-1);">ColorFlow Dinâmico</div>
+                <div style="font-size:11px; color:var(--text-3);">Transição suave das cores de destaque e aurora.</div>
+              </div>
+              <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <label class="switch-inline">
+                  <input type="checkbox" id="setColorDynamic"${state.color.dynamic ? ' checked' : ''}>
+                  <span>Ativo</span>
+                </label>
+                <div class="seg-mini" id="setColorSpeedGroup">
+                  <button type="button" data-speed="slow" class="${state.color.speed === 'slow' ? 'active' : ''}">Ultra Suave</button>
+                  <button type="button" data-speed="medium" class="${state.color.speed === 'medium' ? 'active' : ''}">Suave</button>
+                  <button type="button" data-speed="fast" class="${state.color.speed === 'fast' ? 'active' : ''}">Vivo</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="settings-toggle-row">
+              <span>Tamanho da fonte no Leitor / Editor</span>
+              <div class="zoom-group">
+                <button type="button" id="setFontMinusBtn">A-</button>
+                <span id="setFontVal">${state.readerFontSize}px</span>
+                <button type="button" id="setFontPlusBtn">A+</button>
+              </div>
+            </div>
+
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:4px;">
+              <button type="button" class="btn-sm" id="settingsSyncWorkspaceBtn">↻ Sync Workspace</button>
+              <button type="button" class="btn-sm" id="settingsSyncRssBtn">↻ Sync RSS (${MD.escapeHtml(selectedKey)})</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-danger-zone">
+          <div>
+            <strong style="font-size:13px; color:#fda4af;">Zona de Perigo — Remover Workspace da Configuração</strong>
+            <div style="font-size:11.5px; color:var(--text-2); margin-top:2px;">
+              Remove apenas a entrada <code>${MD.escapeHtml(selectedKey)}</code> do <code>${MD.escapeHtml(cfg.writableFile || 'config.local.json')}</code>. Os arquivos <code>.md</code> no disco <strong>não</strong> são apagados.
+            </div>
+          </div>
+          <button type="button" class="btn-sm btn-danger" id="settingsDeleteWsBtn"${order.length <= 1 ? ' disabled title="Não é possível remover o único workspace"' : ''}>Remover Workspace</button>
+        </div>
+      </section>
+    `;
+
+    container.querySelectorAll('[data-settings-tab]').forEach((btn) => {
+      btn.onclick = () => {
+        state.settingsChannelKey = btn.dataset.settingsTab;
+        renderSettingsView(container);
+      };
+    });
+
+    const newWsBtn = document.getElementById('settingsNewWsBtn');
+    if (newWsBtn) newWsBtn.onclick = () => openNewWorkspaceModal();
+
+    const avatarInp = document.getElementById('setWsAvatar');
+    const avatarPrev = document.getElementById('setAvatarPreview');
+    const avatarFb = document.getElementById('setAvatarFallback');
+    if (avatarInp && avatarPrev && avatarFb) {
+      avatarInp.oninput = () => {
+        const url = avatarInp.value.trim();
+        if (url) {
+          avatarPrev.style.display = 'block';
+          avatarFb.style.display = 'none';
+          avatarPrev.src = url;
+        } else {
+          avatarPrev.style.display = 'none';
+          avatarFb.style.display = 'grid';
+        }
+      };
+    }
+
+    const wsNameInp = document.getElementById('setWsName');
+    if (wsNameInp) {
+      wsNameInp.oninput = () => {
+        const nm = document.getElementById('setPreviewName');
+        if (nm) nm.textContent = wsNameInp.value.trim() || selectedKey;
+        if (avatarFb) avatarFb.textContent = (wsNameInp.value.trim() || selectedKey).slice(0, 2).toUpperCase();
+      };
+    }
+    const wsHandleInp = document.getElementById('setWsHandle');
+    if (wsHandleInp) {
+      wsHandleInp.oninput = () => {
+        const hd = document.getElementById('setPreviewHandle');
+        if (hd) hd.textContent = wsHandleInp.value.trim();
+      };
+    }
+
+    const seriesTextarea = document.getElementById('setWsSeriesList');
+    const spotContainer = document.getElementById('setSpotlightChecks');
+    if (seriesTextarea && spotContainer) {
+      seriesTextarea.oninput = () => {
+        const checkedNow = new Set(
+          Array.from(spotContainer.querySelectorAll('input[name="setSpotlightSerie"]:checked')).map((el) => el.value)
+        );
+        const list = seriesTextarea.value
+          .split(/\r?\n/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+        spotContainer.innerHTML = list.length
+          ? list
+              .map(
+                (s) => `
+                  <label class="settings-series-chk">
+                    <input type="checkbox" name="setSpotlightSerie" value="${MD.escapeHtml(s)}"${checkedNow.has(s) ? ' checked' : ''}>
+                    <span>${MD.escapeHtml(s)}</span>
+                  </label>
+                `
+              )
+              .join('')
+          : '<span style="font-size:11.5px; color:var(--text-3);">Adicione séries acima para selecionar destaques.</span>';
+      };
+    }
+
+    const colorDynChk = document.getElementById('setColorDynamic');
+    if (colorDynChk) {
+      colorDynChk.onchange = (e) => {
+        state.color.dynamic = e.target.checked;
+        ColorFlowEngine.savePrefs();
+        ColorFlowEngine.applyCurrent(performance.now());
+        ColorFlowEngine.renderMenu();
+      };
+    }
+    container.querySelectorAll('#setColorSpeedGroup button').forEach((btn) => {
+      btn.onclick = () => {
+        state.color.speed = btn.dataset.speed;
+        state.color.dynamic = true;
+        ColorFlowEngine.savePrefs();
+        ColorFlowEngine.applyCurrent(performance.now());
+        ColorFlowEngine.renderMenu();
+        renderSettingsView(container);
+      };
+    });
+
+    const setFont = (next) => {
+      state.readerFontSize = Math.min(24, Math.max(13, next));
+      const prefs = loadJsonStorage(STORAGE_KEY_PREFS, {});
+      prefs.readerFontSize = state.readerFontSize;
+      saveJsonStorage(STORAGE_KEY_PREFS, prefs);
+      const valEl = document.getElementById('setFontVal');
+      if (valEl) valEl.textContent = `${state.readerFontSize}px`;
+    };
+    const fMinus = document.getElementById('setFontMinusBtn');
+    const fPlus = document.getElementById('setFontPlusBtn');
+    if (fMinus) fMinus.onclick = () => setFont(state.readerFontSize - 1);
+    if (fPlus) fPlus.onclick = () => setFont(state.readerFontSize + 1);
+
+    const syncWsBtn = document.getElementById('settingsSyncWorkspaceBtn');
+    if (syncWsBtn) {
+      syncWsBtn.onclick = async () => {
+        try {
+          const res = await fetch('/api/state', { cache: 'no-store' });
+          const fresh = await res.json();
+          if (!res.ok) throw new Error(fresh.error || 'Erro ao reindexar');
+          state.data = normalizePayload(fresh);
+          await loadSettingsConfig({ force: true });
+          updateHeaderChrome();
+          showToast('Workspace reindexado com sucesso!');
+        } catch (err) {
+          showToast(err.message);
+        }
+      };
+    }
+
+    const syncRssBtn = document.getElementById('settingsSyncRssBtn');
+    if (syncRssBtn) {
+      syncRssBtn.onclick = async () => {
+        showToast(`Consultando RSS de ${selectedKey}...`);
+        try {
+          const res = await fetch('/api/sync-youtube', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ channel: selectedKey }),
+          });
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || 'Erro no sync RSS');
+          if (json.state) state.data = normalizePayload(json.state);
+          updateHeaderChrome();
+          showToast(json.warning || `RSS sincronizado (${json.updatedCount || 0} vídeos).`);
+        } catch (err) {
+          showToast(err.message);
+        }
+      };
+    }
+
+    const saveBtn = document.getElementById('settingsSaveBtn');
+    if (saveBtn) {
+      saveBtn.onclick = async () => {
+        const seriesList = (document.getElementById('setWsSeriesList')?.value || '')
+          .split(/\r?\n/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const seriesSet = new Set(seriesList);
+        const spotlightSeries = Array.from(
+          container.querySelectorAll('input[name="setSpotlightSerie"]:checked')
+        )
+          .map((el) => el.value)
+          .filter((s) => seriesSet.size === 0 || seriesSet.has(s));
+
+        const totalVidRaw = (document.getElementById('setWsTotalVideos')?.value || '').trim();
+        const linksPayload = {
+          github: document.getElementById('setLinkGithub')?.value.trim() || '',
+          hub: document.getElementById('setLinkHub')?.value.trim() || '',
+          tabnews: document.getElementById('setLinkTabnews')?.value.trim() || '',
+          medium: document.getElementById('setLinkMedium')?.value.trim() || '',
+          tiktok: document.getElementById('setLinkTiktok')?.value.trim() || '',
+          x: document.getElementById('setLinkX')?.value.trim() || '',
+        };
+
+        const payload = {
+          defaultChannel: document.getElementById('setDefaultChannel')?.value,
+          kdenliveRootRaw: document.getElementById('setKdenliveRoot')?.value.trim(),
+          host: document.getElementById('setHost')?.value.trim(),
+          port: Number(document.getElementById('setPort')?.value),
+          channelKey: selectedKey,
+          channelData: {
+            name: document.getElementById('setWsName')?.value.trim(),
+            handle: document.getElementById('setWsHandle')?.value.trim(),
+            channelId: document.getElementById('setWsChannelId')?.value.trim(),
+            url: document.getElementById('setWsUrl')?.value.trim(),
+            avatar: document.getElementById('setWsAvatar')?.value.trim(),
+            bio: document.getElementById('setWsBio')?.value.trim(),
+            status: document.getElementById('setWsStatus')?.value,
+            statusLabel: document.getElementById('setWsStatusLabel')?.value.trim(),
+            subscribers: Number(document.getElementById('setWsSubscribers')?.value || 0),
+            totalVideos: totalVidRaw === '' ? null : Number(totalVidRaw),
+            bannerEnabled: Boolean(document.getElementById('setBannerEnabled')?.checked),
+            bannerBadge: document.getElementById('setBannerBadge')?.value.trim(),
+            bannerTitle: document.getElementById('setBannerTitle')?.value.trim(),
+            bannerSubtitle: document.getElementById('setBannerSubtitle')?.value.trim(),
+            bannerDocPath: document.getElementById('setBannerDocPath')?.value.trim(),
+            workspacePathRaw: document.getElementById('setWsPath')?.value.trim(),
+            kdenliveFolder: document.getElementById('setWsKdenliveFolder')?.value.trim(),
+            seriesList,
+            spotlightSeries,
+            links: linksPayload,
+          },
+        };
+
+        try {
+          const res = await fetch('/api/config', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || 'Erro ao salvar configurações');
+          state.settingsConfig = json.config;
+          state.data = normalizePayload(json.state);
+          initSelectedSeriesForChannel(getActiveChannelData());
+          updateHeaderChrome();
+          renderSettingsView(container);
+          showToast(
+            json.restartRequired
+              ? 'Configurações salvas! Reinicie o servidor para aplicar o novo Host/Porta.'
+              : `Configurações salvas em ${json.config?.writableFile || 'config.local.json'}!`
+          );
+        } catch (err) {
+          showToast(err.message);
+        }
+      };
+    }
+
+    const delWsBtn = document.getElementById('settingsDeleteWsBtn');
+    if (delWsBtn) {
+      delWsBtn.onclick = async () => {
+        if (order.length <= 1) return;
+        if (
+          !confirm(
+            `Remover o workspace "${ch.name || selectedKey}" (${selectedKey}) das configurações do Studio?\n\nNenhum arquivo .md no disco será apagado.`
+          )
+        ) {
+          return;
+        }
+        try {
+          const res = await fetch(`/api/config/channels?key=${encodeURIComponent(selectedKey)}`, {
+            method: 'DELETE',
+          });
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || 'Erro ao remover workspace');
+          state.settingsConfig = json.config;
+          state.data = normalizePayload(json.state);
+          if (state.activeChannel === selectedKey) {
+            state.activeChannel = state.data?.defaultChannel || getChannelKeys()[0] || 'mrj';
+            state.selectedDocPath = null;
+            state.activeVersion = 'principal';
+            state.versionHistory = null;
+            state.versionFetchedKey = '';
+            state.dirtyBody = null;
+            state.dirtyMeta = null;
+            state.hasUnsavedEdits = false;
+            initSelectedSeriesForChannel(getActiveChannelData());
+            syncBrowserUrl({ replace: true });
+          }
+          state.settingsChannelKey = state.activeChannel;
+          updateHeaderChrome();
+          renderSettingsView(container);
+          showToast(`Workspace "${selectedKey}" removido da configuração (arquivos preservados no disco).`);
+        } catch (err) {
+          showToast(err.message);
+        }
+      };
+    }
+  }
+
+  /* =========================================================
+     MODAIS: CRIAR DOCUMENTO, WORKSPACE, BUSCA (Ctrl+K) & NOTIFICAÇÕES
+  ========================================================= */
+  function openNewWorkspaceModal() {
+    if (!state.serverMode) {
+      showToast('Adicionar novo workspace requer o servidor local (./bin/crom-studio --tray).');
+      return;
+    }
+    const modal = document.getElementById('newWorkspaceModal');
+    const keyEl = document.getElementById('newWsKey');
+    const nameEl = document.getElementById('newWsName');
+    const handleEl = document.getElementById('newWsHandle');
+    const kdEl = document.getElementById('newWsKdenliveFolder');
+    const pathEl = document.getElementById('newWsPath');
+    const seriesEl = document.getElementById('newWsSeries');
+    const createEl = document.getElementById('newWsCreateFolder');
+
+    if (keyEl) {
+      keyEl.value = '';
+      delete keyEl.dataset.touched;
+    }
+    if (nameEl) nameEl.value = '';
+    if (handleEl) handleEl.value = '';
+    if (kdEl) {
+      kdEl.value = '';
+      delete kdEl.dataset.touched;
+    }
+    if (pathEl) pathEl.value = '';
+    if (seriesEl) seriesEl.value = 'Geral, Shorts & Cortes, Canal & Ops';
+    if (createEl) createEl.checked = true;
+
+    modal?.classList.remove('hidden');
+    setTimeout(() => nameEl?.focus(), 40);
+  }
+
   function populateNewDocSelects(chData) {
     const serieEl = document.getElementById('newDocSerie');
     const folderEl = document.getElementById('newDocFolder');
@@ -2763,29 +4848,29 @@
       .map((s) => `<option value="${MD.escapeHtml(s)}">${MD.escapeHtml(s)}</option>`)
       .join('');
 
-    const folders =
-      chData.key === 'mrj'
-        ? [
-            { value: '06-series/imagine', label: '06-series/imagine (Série Imagine)' },
-            { value: '06-series/pensamentos', label: '06-series/pensamentos (Série Pensamentos)' },
-            { value: '06-series/historias', label: '06-series/historias (Série Histórias)' },
-            { value: '06-series/reavaliar', label: '06-series/reavaliar (Série Reavaliar)' },
-            { value: '06-series/crom', label: '06-series/crom (Série Crom)' },
-            { value: '02-roteiros/rascunhos', label: '02-roteiros/rascunhos' },
-            { value: '02-roteiros/em-producao', label: '02-roteiros/em-producao' },
-            { value: '03-shorts', label: '03-shorts' },
-            { value: '01-ideias', label: '01-ideias' },
-            { value: '02-roteiros/publicados', label: '02-roteiros/publicados' },
-            { value: '04-producao', label: '04-producao' },
-          ]
-        : [
-            { value: '02-roteiros/rascunhos', label: '02-roteiros/rascunhos' },
-            { value: '02-roteiros/em-producao', label: '02-roteiros/em-producao' },
-            { value: '03-shorts', label: '03-shorts' },
-            { value: '01-ideias', label: '01-ideias' },
-            { value: '02-roteiros/publicados', label: '02-roteiros/publicados' },
-            { value: '04-producao', label: '04-producao' },
-          ];
+    const seen = new Set();
+    const folders = [];
+    const pushFolder = (value, label = value) => {
+      if (!value || value === 'raiz' || seen.has(value)) return;
+      seen.add(value);
+      folders.push({ value, label });
+    };
+
+    for (const s of seriesList) {
+      const sFolder = SERIE_META[s]?.folder;
+      if (sFolder) pushFolder(sFolder, `${sFolder} (Série ${s})`);
+    }
+
+    const standardFolders = [
+      '02-roteiros/rascunhos',
+      '02-roteiros/em-producao',
+      '03-shorts',
+      '01-ideias',
+      '02-roteiros/publicados',
+      '04-producao',
+    ];
+    for (const sf of standardFolders) pushFolder(sf, sf);
+    for (const cf of chData.folders || []) pushFolder(cf, cf);
 
     folderEl.innerHTML = folders
       .map((f) => `<option value="${MD.escapeHtml(f.value)}">${MD.escapeHtml(f.label)}</option>`)
@@ -2805,13 +4890,14 @@
     const summaryEl = document.getElementById('newDocSummary');
     const dateEl = document.getElementById('newDocTargetDate');
 
-    const defaultType = prefill.type || (chData.key === 'mrj' ? 'episodio-serie' : 'roteiro-longo');
-    const defaultSerie = prefill.serie || (chData.key === 'mrj' ? 'Imagine' : 'Ensaios & Avulsos');
-    const defaultFolder =
-      prefill.folder ||
-      (chData.key === 'mrj' && SERIE_META[defaultSerie]?.folder
-        ? SERIE_META[defaultSerie].folder
-        : '02-roteiros/rascunhos');
+    const seriesList = getChannelSeriesList(chData);
+    const defaultSerie = prefill.serie || seriesList[0] || 'Geral';
+    const serieFolder = SERIE_META[defaultSerie]?.folder;
+    const hasSerieFolder = Boolean(serieFolder && Array.from(folderEl.options).some((o) => o.value === serieFolder));
+    const defaultType = prefill.type || (hasSerieFolder ? 'episodio-serie' : 'roteiro-longo');
+    const defaultFolder = prefill.folder || (hasSerieFolder ? serieFolder : '02-roteiros/rascunhos');
+    const githubLink = chData.channel?.links?.github || '';
+    const defaultRepo = githubLink ? githubLink.replace(/\/+$/, '').split('/').pop() : 'MrJc01';
 
     typeEl.value = defaultType;
     if (Array.from(serieEl.options).some((o) => o.value === defaultSerie)) {
@@ -2821,7 +4907,7 @@
       folderEl.value = defaultFolder;
     }
     titleEl.value = prefill.title || '';
-    repoEl.value = prefill.repo || 'MrJc01';
+    repoEl.value = prefill.repo ?? defaultRepo;
     summaryEl.value = prefill.summary || '';
     dateEl.value = prefill.date || '';
 
@@ -3056,32 +5142,332 @@ ${summary || ''}
   }
 
   /* =========================================================
+     ATUALIZAÇÕES AO VIVO DO DISCO (SSE /api/events)
+  ========================================================= */
+  let liveEventSource = null;
+  let liveDebounceTimer = null;
+  let liveLifecycleBound = false;
+
+  function closeLiveEvents() {
+    if (liveDebounceTimer) {
+      clearTimeout(liveDebounceTimer);
+      liveDebounceTimer = null;
+    }
+    if (liveEventSource) {
+      try {
+        liveEventSource.close();
+      } catch {
+        // ignora
+      }
+      liveEventSource = null;
+    }
+    state.liveConnected = false;
+  }
+
+  async function handleLiveWorkspaceUpdate(source) {
+    try {
+      const res = await fetch('/api/state', { cache: 'no-store' });
+      if (!res.ok) return;
+      const fresh = await res.json();
+      state.data = normalizePayload(fresh);
+
+      if (!state.data?.channels?.[state.activeChannel]) {
+        state.activeChannel = state.data?.defaultChannel || getChannelKeys()[0] || 'mrj';
+        state.selectedDocPath = null;
+        state.activeVersion = 'principal';
+        state.versionHistory = null;
+        state.versionFetchedKey = '';
+        state.diffResult = null;
+        state.dirtyBody = null;
+        state.dirtyMeta = null;
+        state.hasUnsavedEdits = false;
+        state.settingsChannelKey = state.activeChannel;
+        initSelectedSeriesForChannel(getActiveChannelData());
+        syncBrowserUrl({ replace: true });
+      }
+
+      if (state.view === 'scripts' && state.hasUnsavedEdits) {
+        updateHeaderChrome();
+        const activeDoc = getActiveDoc();
+        if (activeDoc) {
+          await loadVersionHistory(activeDoc.path, { force: true, skipRender: state.docMode === 'edit' });
+        }
+        showToast('Alteração externa detectada no disco (rascunho atual preservado)');
+        return;
+      }
+
+      const activeCh = getActiveChannelData();
+      if (state.selectedDocPath && !(activeCh.docs || []).some((d) => d.path === state.selectedDocPath)) {
+        state.selectedDocPath = null;
+        state.activeVersion = 'principal';
+        state.versionHistory = null;
+        state.versionFetchedKey = '';
+        state.diffResult = null;
+        state.dirtyBody = null;
+        state.dirtyMeta = null;
+      }
+
+      updateHeaderChrome();
+
+      if (state.view === 'settings') {
+        await loadSettingsConfig({ force: true });
+      } else {
+        renderCurrentView();
+      }
+
+      if (state.view === 'scripts') {
+        const activeDoc = getActiveDoc();
+        if (activeDoc) {
+          await loadVersionHistory(activeDoc.path, { force: true });
+          if (state.activeVersion !== 'principal') {
+            try {
+              const verRes = await fetch(
+                `/api/versions/content?channel=${encodeURIComponent(state.activeChannel)}&path=${encodeURIComponent(activeDoc.path)}&ref=${encodeURIComponent(`ver:${state.activeVersion}`)}`,
+                { cache: 'no-store' }
+              );
+              if (verRes.ok) {
+                const verJson = await verRes.json();
+                const parsed = MD.parseFrontmatter(verJson.content || '');
+                state.dirtyMeta = Object.keys(parsed.meta).length ? parsed.meta : null;
+                state.dirtyBody = parsed.body;
+              } else {
+                state.activeVersion = 'principal';
+                state.dirtyMeta = null;
+                state.dirtyBody = null;
+                syncBrowserUrl({ replace: true });
+                updateHeaderChrome();
+              }
+              if (state.view === 'scripts') {
+                renderScriptsView(document.getElementById('viewContainer'));
+              }
+            } catch {
+              // Ignora erro transitório ao recarregar variante
+            }
+          }
+        }
+      }
+
+      if (source === 'fs') {
+        showToast('Atualizado automaticamente do disco');
+      }
+    } catch {
+      // Ignora erro transitório durante reload
+    }
+  }
+
+  function connectLiveEvents() {
+    if (!state.serverMode || !global.EventSource) return;
+    closeLiveEvents();
+
+    if (!liveLifecycleBound) {
+      liveLifecycleBound = true;
+      global.addEventListener('pagehide', closeLiveEvents);
+      global.addEventListener('beforeunload', closeLiveEvents);
+      global.addEventListener('pageshow', (event) => {
+        if (event.persisted && state.serverMode) {
+          connectLiveEvents();
+        }
+      });
+    }
+
+    const es = new EventSource('/api/events');
+    liveEventSource = es;
+
+    const markConnected = () => {
+      state.liveConnected = true;
+      updateConnectionBadge();
+    };
+
+    es.onopen = markConnected;
+    es.addEventListener('ready', markConnected);
+    es.onerror = () => {
+      state.liveConnected = false;
+      updateConnectionBadge();
+    };
+
+    let pendingSource = '';
+    es.addEventListener('update', (ev) => {
+      let payload = {};
+      try {
+        payload = JSON.parse(ev.data || '{}');
+      } catch {
+        payload = {};
+      }
+      if (payload.source === 'fs') pendingSource = 'fs';
+      else if (!pendingSource) pendingSource = payload.source || '';
+
+      if (liveDebounceTimer) clearTimeout(liveDebounceTimer);
+      liveDebounceTimer = setTimeout(() => {
+        liveDebounceTimer = null;
+        const src = pendingSource;
+        pendingSource = '';
+        handleLiveWorkspaceUpdate(src);
+      }, 150);
+    });
+  }
+
+  /* =========================================================
      BOOT & BINDINGS GLOBAIS
   ========================================================= */
   function bindGlobalEvents() {
+    const workspaceMenu = document.getElementById('workspaceMenu');
+    const avatarBtn = document.getElementById('channelAvatarBtn');
+    const fabMenu = document.getElementById('fabMenu');
+    const fabNewBtn = document.getElementById('fabNewBtn');
+    const colorMenu = document.getElementById('colorMenu');
+
+    const closeAllMenus = () => {
+      workspaceMenu?.classList.add('hidden');
+      avatarBtn?.setAttribute('aria-expanded', 'false');
+      fabMenu?.classList.add('hidden');
+      fabNewBtn?.classList.remove('is-open');
+      fabNewBtn?.setAttribute('aria-expanded', 'false');
+      colorMenu?.classList.add('hidden');
+    };
+
     document.querySelectorAll('#sideNav .nav-item').forEach((btn) => {
-      btn.onclick = () => setView(btn.dataset.view);
+      btn.onclick = () => {
+        closeAllMenus();
+        setView(btn.dataset.view);
+      };
     });
 
-    document.getElementById('brandBtn').onclick = () => setView('dashboard');
-    document.getElementById('channelAvatarBtn').onclick = () => setView('catalog');
+    document.getElementById('brandBtn').onclick = () => {
+      closeAllMenus();
+      setView('dashboard');
+    };
     document.getElementById('connectionModeBtn').onclick = () => connectLocalFolder();
-    document.getElementById('fabNewBtn').onclick = () => openNewDocModal();
-    document.getElementById('cmdSearchBtn').onclick = () => openCmdModal();
-    document.getElementById('notifBtn').onclick = () => openNotifDrawer();
+    document.getElementById('cmdSearchBtn').onclick = () => {
+      closeAllMenus();
+      openCmdModal();
+    };
+    document.getElementById('notifBtn').onclick = () => {
+      closeAllMenus();
+      openNotifDrawer();
+    };
     document.getElementById('closeNotifBtn').onclick = () => document.getElementById('notifDrawer').classList.add('hidden');
 
-    const colorMenu = document.getElementById('colorMenu');
+    if (avatarBtn && workspaceMenu) {
+      avatarBtn.onclick = (e) => {
+        e.stopPropagation();
+        const willOpen = workspaceMenu.classList.contains('hidden');
+        closeAllMenus();
+        if (willOpen) {
+          renderChannelSwitchers();
+          workspaceMenu.classList.remove('hidden');
+          avatarBtn.setAttribute('aria-expanded', 'true');
+        }
+      };
+      workspaceMenu.onclick = (e) => e.stopPropagation();
+    }
+
+    const wsCreateBtn = document.getElementById('wsMenuCreateBtn');
+    if (wsCreateBtn) {
+      wsCreateBtn.onclick = () => {
+        closeAllMenus();
+        openNewWorkspaceModal();
+      };
+    }
+
+    const wsSettingsBtn = document.getElementById('wsMenuSettingsBtn');
+    if (wsSettingsBtn) {
+      wsSettingsBtn.onclick = () => {
+        closeAllMenus();
+        state.settingsChannelKey = state.activeChannel;
+        setView('settings');
+      };
+    }
+
+    if (fabNewBtn && fabMenu) {
+      fabNewBtn.onclick = (e) => {
+        e.stopPropagation();
+        const willOpen = fabMenu.classList.contains('hidden');
+        closeAllMenus();
+        if (willOpen) {
+          const fabVerBtn = document.getElementById('fabVersionActionBtn');
+          if (fabVerBtn) {
+            fabVerBtn.classList.toggle('hidden', !(state.view === 'scripts' && !!getActiveDoc()));
+          }
+          fabMenu.classList.remove('hidden');
+          fabNewBtn.classList.add('is-open');
+          fabNewBtn.setAttribute('aria-expanded', 'true');
+        }
+      };
+      fabMenu.onclick = (e) => e.stopPropagation();
+
+      fabMenu.querySelectorAll('[data-fab-action]').forEach((item) => {
+        item.onclick = () => {
+          const action = item.dataset.fabAction;
+          closeAllMenus();
+          switch (action) {
+            case 'roteiro':
+              openNewDocModal();
+              break;
+            case 'short':
+              openNewDocModal({ type: 'short', serie: 'Shorts & Cortes', folder: '03-shorts' });
+              break;
+            case 'ideia':
+              openNewDocModal({ type: 'ideia', folder: '01-ideias' });
+              break;
+            case 'version': {
+              const doc = getActiveDoc();
+              if (doc) openNewVersionModal(doc);
+              break;
+            }
+            case 'workspace':
+              openNewWorkspaceModal();
+              break;
+            case 'settings':
+              state.settingsChannelKey = state.activeChannel;
+              setView('settings');
+              break;
+          }
+        };
+      });
+    }
+
     const toggleColorMenu = (e) => {
       e.stopPropagation();
+      if (!colorMenu) return;
+      const trigger = e.currentTarget;
+      const wasOpen = !colorMenu.classList.contains('hidden') && colorMenu.dataset.anchorId === trigger.id;
+      closeAllMenus();
+      if (wasOpen) return;
+
       ColorFlowEngine.renderMenu();
-      colorMenu.classList.toggle('hidden');
+      colorMenu.dataset.anchorId = trigger.id || '';
+      colorMenu.style.visibility = 'hidden';
+      colorMenu.classList.remove('hidden');
+
+      const rect = trigger.getBoundingClientRect();
+      const menuRect = colorMenu.getBoundingClientRect();
+      const margin = 12;
+      const vw = global.innerWidth || document.documentElement.clientWidth;
+      const vh = global.innerHeight || document.documentElement.clientHeight;
+
+      let top = rect.bottom + 8;
+      if (top + menuRect.height > vh - margin) {
+        top = rect.top - menuRect.height - 8;
+      }
+      top = Math.max(margin, Math.min(top, vh - menuRect.height - margin));
+
+      let left = rect.right - menuRect.width;
+      if (left < margin) {
+        left = rect.left;
+      }
+      left = Math.max(margin, Math.min(left, vw - menuRect.width - margin));
+
+      colorMenu.style.top = `${Math.round(top)}px`;
+      colorMenu.style.left = `${Math.round(left)}px`;
+      colorMenu.style.right = 'auto';
+      colorMenu.style.bottom = 'auto';
+      colorMenu.style.visibility = '';
     };
     document.getElementById('colorPillBtn').onclick = toggleColorMenu;
     document.getElementById('colorToggleBtn').onclick = toggleColorMenu;
 
     colorMenu.onclick = (e) => e.stopPropagation();
-    document.addEventListener('click', () => colorMenu.classList.add('hidden'));
+    document.addEventListener('click', () => closeAllMenus());
 
     document.getElementById('dynamicFlowToggle').onchange = (e) => {
       state.color.dynamic = e.target.checked;
@@ -3222,7 +5608,127 @@ ${summary || ''}
       }
     };
 
+    document.getElementById('newVersionForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const activeDoc = getActiveDoc();
+      if (!activeDoc) return;
+      const name = document.getElementById('newVerName').value.trim();
+      const fromVal = document.getElementById('newVerFrom').value;
+      const desc = document.getElementById('newVerDesc').value.trim();
+      const isRev = fromVal.startsWith('rev:');
+      try {
+        const res = await fetch('/api/versions/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            channel: state.activeChannel,
+            path: activeDoc.path,
+            name,
+            description: desc,
+            fromVersion: isRev ? 'principal' : fromVal.replace(/^ver:/, ''),
+            fromRev: isRev ? fromVal.replace(/^rev:/, '') : null,
+            author: 'MrJ',
+          }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'Erro ao criar versão');
+        state.data = normalizePayload(json.state);
+        state.versionHistory = json.history;
+        state.versionFetchedKey = `${state.activeChannel}::${activeDoc.path}`;
+        const parsed = MD.parseFrontmatter(json.content || '');
+        state.activeVersion = json.version.name;
+        state.dirtyMeta = Object.keys(parsed.meta).length ? parsed.meta : null;
+        state.dirtyBody = parsed.body;
+        state.hasUnsavedEdits = false;
+        document.getElementById('newVersionModal').classList.add('hidden');
+        syncBrowserUrl({ replace: false });
+        updateHeaderChrome();
+        renderCurrentView();
+        showToast(`Nova versão "${json.version.name}" criada!`);
+      } catch (err) {
+        showToast(err.message);
+      }
+    };
+
+    const newWsKeyEl = document.getElementById('newWsKey');
+    const newWsNameEl = document.getElementById('newWsName');
+    const newWsKdEl = document.getElementById('newWsKdenliveFolder');
+    if (newWsKeyEl) {
+      newWsKeyEl.oninput = () => {
+        newWsKeyEl.dataset.touched = '1';
+      };
+    }
+    if (newWsKdEl) {
+      newWsKdEl.oninput = () => {
+        newWsKdEl.dataset.touched = '1';
+      };
+    }
+    if (newWsNameEl) {
+      newWsNameEl.oninput = () => {
+        const slug = MD.slugify(newWsNameEl.value).replace(/-/g, '').slice(0, 24) || MD.slugify(newWsNameEl.value);
+        const dashedSlug = MD.slugify(newWsNameEl.value).slice(0, 32);
+        if (newWsKeyEl && !newWsKeyEl.dataset.touched) {
+          newWsKeyEl.value = dashedSlug === 'secao' && !newWsNameEl.value.trim() ? '' : dashedSlug;
+        }
+        if (newWsKdEl && !newWsKdEl.dataset.touched) {
+          newWsKdEl.value = newWsKeyEl?.value ? `videos/${newWsKeyEl.value}` : (slug ? `videos/${slug}` : '');
+        }
+      };
+    }
+
+    const newWsForm = document.getElementById('newWorkspaceForm');
+    if (newWsForm) {
+      newWsForm.onsubmit = async (e) => {
+        e.preventDefault();
+        const key = document.getElementById('newWsKey').value.trim().toLowerCase();
+        const name = document.getElementById('newWsName').value.trim();
+        const handle = document.getElementById('newWsHandle').value.trim();
+        const kdenliveFolder = document.getElementById('newWsKdenliveFolder').value.trim() || `videos/${key}`;
+        const workspacePathRaw = document.getElementById('newWsPath').value.trim();
+        const seriesRaw = document.getElementById('newWsSeries').value;
+        const seriesList = seriesRaw
+          .split(/\r?\n|,/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const createFolder = Boolean(document.getElementById('newWsCreateFolder').checked);
+
+        try {
+          const res = await fetch('/api/config/channels', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              key,
+              name,
+              handle,
+              kdenliveFolder,
+              workspacePathRaw,
+              seriesList,
+              createFolder,
+            }),
+          });
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || 'Erro ao criar workspace');
+          state.settingsConfig = json.config || null;
+          state.data = normalizePayload(json.state);
+          document.getElementById('newWorkspaceModal').classList.add('hidden');
+          switchChannel(json.channelKey, { preserveView: true });
+        } catch (err) {
+          showToast(err.message);
+        }
+      };
+    }
+
     document.getElementById('cmdInput').oninput = (e) => renderCmdResults(e.target.value);
+
+    global.addEventListener('popstate', () => {
+      if (!state.data) return;
+      applyRouteSnapshot(parseRouteFromLocation(state.data));
+      updateHeaderChrome();
+      renderCurrentView();
+      if (state.view === 'scripts' && state.activeVersion !== 'principal' && state.selectedDocPath) {
+        switchDocVersion(state.selectedDocPath, state.activeVersion);
+      }
+    });
 
     document.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
@@ -3232,7 +5738,20 @@ ${summary || ''}
         e.preventDefault();
         saveCurrentDoc();
       } else if (e.key === 'Escape') {
-        document.querySelectorAll('.modal-backdrop, .drawer-backdrop, #colorMenu').forEach((el) => el.classList.add('hidden'));
+        const openOverlays = Array.from(
+          document.querySelectorAll('.modal-backdrop, .drawer-backdrop, #colorMenu, #workspaceMenu, #fabMenu')
+        ).filter((el) => !el.classList.contains('hidden'));
+        if (openOverlays.length) {
+          openOverlays.forEach((el) => el.classList.add('hidden'));
+          fabNewBtn?.classList.remove('is-open');
+          fabNewBtn?.setAttribute('aria-expanded', 'false');
+          avatarBtn?.setAttribute('aria-expanded', 'false');
+        } else if (state.focusMode) {
+          state.focusMode = false;
+          syncBrowserUrl({ replace: true });
+          updateHeaderChrome();
+          renderCurrentView();
+        }
       } else if (
         e.code === 'Space' &&
         state.view === 'scripts' &&
@@ -3249,8 +5768,14 @@ ${summary || ''}
     ColorFlowEngine.init();
     bindGlobalEvents();
     await loadInitialData();
+    if (state.serverMode) {
+      connectLiveEvents();
+    }
     updateHeaderChrome();
     renderCurrentView();
+    if (state.view === 'scripts' && state.activeVersion !== 'principal' && state.selectedDocPath) {
+      await switchDocVersion(state.selectedDocPath, state.activeVersion);
+    }
   }
 
   if (document.readyState === 'loading') {

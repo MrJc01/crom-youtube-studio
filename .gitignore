@@ -1,11 +1,18 @@
 # Local machine config and generated caches (never commit personal paths or local caches)
 config.local.json
+config.*.local.json
 data/
 web/data.js
 
-# Logs, runtime state, OS and Python caches
+# Environment, IDE, runtime state, OS and Python caches
+.env
+.env.*
 *.log
 *.pid
+*.sock
+*.tmp
+.vscode/
+.idea/
 __pycache__/
 *.py[cod]
 .DS_Store
