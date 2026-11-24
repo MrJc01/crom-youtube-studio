@@ -2,7 +2,6 @@
 """Sintetizador local em lote para Kyutai Pocket TTS (carrega modelo 1x por trabalho)."""
 
 import json
-import math
 import os
 import sys
 import wave
@@ -25,6 +24,11 @@ def main() -> int:
     voice_path = str(job.get("voicePath") or "")
     out_wav = str(job.get("outputPath") or "")
     temperature = float(job.get("temperature", 0.3))
+    sampler_decode_steps = max(1, min(16, int(job.get("samplerDecodeSteps", 1))))
+    raw_noise_clamp = job.get("noiseClamp", None)
+    noise_clamp = float(raw_noise_clamp) if raw_noise_clamp not in (None, "", 0, 0.0) else None
+    raw_eos = job.get("eosThreshold", None)
+    eos_threshold = float(raw_eos) if raw_eos not in (None, "") else None
     pause_ms = max(0, int(job.get("pauseMs", 220)))
     chunks = [str(c).strip() for c in (job.get("chunks") or []) if str(c).strip()]
 
@@ -38,8 +42,17 @@ def main() -> int:
         sys.stderr.write("Nenhum trecho de texto para sintetizar\n")
         return 5
 
-    torch.set_num_threads(max(1, min(8, os.cpu_count() or 4)))
-    model = TTSModel.load_model(language=lang, temp=temperature)
+    torch.set_num_threads(max(1, min(10, os.cpu_count() or 4)))
+    load_kwargs = {
+        "language": lang,
+        "temp": temperature,
+        "sampler_decode_steps": sampler_decode_steps,
+        "noise_clamp": noise_clamp,
+    }
+    if eos_threshold is not None:
+        load_kwargs["eos_threshold"] = eos_threshold
+
+    model = TTSModel.load_model(**load_kwargs)
     voice_state = model.get_state_for_audio_prompt(voice_path)
     sr = int(getattr(model, "sample_rate", 24000))
 
@@ -51,7 +64,6 @@ def main() -> int:
         arr = audio_tensor.detach().cpu().numpy().astype(np.float32).reshape(-1)
         if arr.size == 0:
             continue
-        # Remove NaN/Inf defensivamente
         arr = np.nan_to_num(arr, nan=0.0, posinf=1.0, neginf=-1.0)
         segments.append(arr)
         if silence is not None and idx < len(chunks) - 1:
@@ -80,6 +92,8 @@ def main() -> int:
         "outputPath": out_wav,
         "sampleRate": sr,
         "chunks": len(chunks),
+        "samplerDecodeSteps": sampler_decode_steps,
+        "noiseClamp": noise_clamp,
         "durationSec": duration_sec,
     }))
     sys.stdout.flush()

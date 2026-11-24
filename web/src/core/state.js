@@ -151,7 +151,10 @@ export const state = {
     usePronunciationDict: true,
     loudnorm: false,
     // Pocket TTS controls
+    voiceFile: 'mrj_pt24l_ref01.safetensors',
     temperature: 0.3,
+    samplerDecodeSteps: 4,
+    noiseClamp: 2.5,
     pauseMs: 220,
     // Piper controls
     lengthScale: 1.5,
@@ -163,6 +166,12 @@ export const state = {
     reverb: 0,
     bassDb: 0,
     trebleDb: 0,
+    // RVC v2 (Nível 2) controls
+    rvcEnabled: false,
+    rvcModelName: '',
+    rvcF0UpKey: 0,
+    rvcIndexRate: 0.75,
+    rvcProtect: 0.33,
     // Library filters
     filterOrigin: 'all',
     filterCategory: 'all',

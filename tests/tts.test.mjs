@@ -131,6 +131,7 @@ test('CRUD de presets de voz inclui crom-j (1.50x, pitch 0.90x) e mrj-pocket', a
     const presets = listVoicePresets(wsPath);
     const cromJ = presets.find((p) => p.id === 'crom-j');
     const mrjPocket = presets.find((p) => p.id === 'mrj-pocket');
+    const mrjHq = presets.find((p) => p.id === 'mrj-pocket-hq');
     assert.ok(cromJ);
     assert.equal(cromJ.lengthScale, 1.5);
     assert.equal(cromJ.noiseScale, 0.67);
@@ -140,15 +141,26 @@ test('CRUD de presets de voz inclui crom-j (1.50x, pitch 0.90x) e mrj-pocket', a
     assert.ok(mrjPocket);
     assert.equal(mrjPocket.engine, 'pocket-tts');
     assert.equal(mrjPocket.temperature, 0.3);
+    assert.equal(mrjPocket.samplerDecodeSteps, 4);
+    assert.equal(mrjPocket.noiseClamp, 2.5);
+    assert.ok(mrjHq);
+    assert.equal(mrjHq.voiceFile, 'mrj_pt24l_v2_24s_limpa.safetensors');
+    assert.equal(mrjHq.samplerDecodeSteps, 6);
+    assert.equal(mrjHq.rvc.f0Method, 'rmvpe');
 
     const saved = await saveVoicePreset(wsPath, {
       name: 'Crom Grave Custom',
       engine: 'piper',
       lengthScale: 1.25,
       effects: { pitchShift: 0.82, bassDb: 4 },
+      rvc: { enabled: true, modelName: 'mrj_rvc.pth', f0UpKey: -2, indexRate: 0.8 },
     });
     assert.equal(saved.ok, true);
-    assert.ok(saved.presets.some((p) => p.id === saved.preset.id && p.effects.bassDb === 4));
+    assert.ok(
+      saved.presets.some(
+        (p) => p.id === saved.preset.id && p.effects.bassDb === 4 && p.rvc.enabled === true && p.rvc.f0UpKey === -2
+      )
+    );
 
     const del = await deleteVoicePreset(wsPath, saved.preset.id);
     assert.equal(del.ok, true);

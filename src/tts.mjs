@@ -54,6 +54,8 @@ export const BUILTIN_VOICE_PRESETS = [
     language: 'portuguese_24l',
     voiceFile: 'mrj_pt24l_ref01.safetensors',
     temperature: 0.3,
+    samplerDecodeSteps: 4,
+    noiseClamp: 2.5,
     pauseMs: 220,
     loudnorm: true,
     effects: {
@@ -61,6 +63,44 @@ export const BUILTIN_VOICE_PRESETS = [
       reverb: 0,
       bassDb: 0,
       trebleDb: 0,
+    },
+    rvc: {
+      enabled: false,
+      modelName: '',
+      f0UpKey: 0,
+      f0Method: 'rmvpe',
+      indexRate: 0.75,
+      protect: 0.33,
+      rmsMixRate: 0.25,
+    },
+  },
+  {
+    id: 'mrj-pocket-hq',
+    name: 'Voz do MrJ (Alta Fidelidade • 24s Limpa)',
+    description: 'Pocket TTS portuguese_24l com 6 passos de decodificação, noise clamp 2.5 e referência limpa de 24s.',
+    builtin: true,
+    engine: 'pocket-tts',
+    language: 'portuguese_24l',
+    voiceFile: 'mrj_pt24l_v2_24s_limpa.safetensors',
+    temperature: 0.24,
+    samplerDecodeSteps: 6,
+    noiseClamp: 2.5,
+    pauseMs: 220,
+    loudnorm: true,
+    effects: {
+      pitchShift: 1.0,
+      reverb: 0,
+      bassDb: 0,
+      trebleDb: 0,
+    },
+    rvc: {
+      enabled: false,
+      modelName: '',
+      f0UpKey: 0,
+      f0Method: 'rmvpe',
+      indexRate: 0.75,
+      protect: 0.33,
+      rmsMixRate: 0.25,
     },
   },
   {
@@ -144,6 +184,21 @@ function normalizeEffects(raw = {}) {
   };
 }
 
+function normalizeRvcOptions(raw = {}) {
+  const obj = isPlainObject(raw) ? raw : {};
+  const method = String(obj.f0Method || 'rmvpe').trim().toLowerCase();
+  const validMethods = new Set(['rmvpe', 'crepe', 'pm', 'harvest']);
+  return {
+    enabled: Boolean(obj.enabled),
+    modelName: obj.modelName ? path.basename(String(obj.modelName).trim()) : '',
+    f0UpKey: Math.round(clampNumber(obj.f0UpKey, -12, 12, 0)),
+    f0Method: validMethods.has(method) ? method : 'rmvpe',
+    indexRate: clampNumber(obj.indexRate, 0, 1, 0.75),
+    protect: clampNumber(obj.protect, 0, 0.5, 0.33),
+    rmsMixRate: clampNumber(obj.rmsMixRate, 0, 1, 0.25),
+  };
+}
+
 export function normalizePresetShape(raw, existing = null) {
   const base = existing || {};
   const engine =
@@ -154,6 +209,11 @@ export function normalizePresetShape(raw, existing = null) {
   const name = String(raw.name || base.name || rawId).trim().slice(0, 80);
 
   if (engine === 'pocket-tts') {
+    const rawClamp = raw.noiseClamp !== undefined ? raw.noiseClamp : base.noiseClamp;
+    const parsedClamp =
+      rawClamp === null || rawClamp === '' || Number(rawClamp) <= 0
+        ? null
+        : clampNumber(rawClamp, 0.5, 6.0, 2.5);
     return {
       id: rawId,
       name,
@@ -163,9 +223,12 @@ export function normalizePresetShape(raw, existing = null) {
       language: String(raw.language || base.language || 'portuguese_24l').trim(),
       voiceFile: path.basename(String(raw.voiceFile || base.voiceFile || 'mrj_pt24l_ref01.safetensors').trim()),
       temperature: clampNumber(raw.temperature ?? base.temperature, 0.05, 1.5, 0.3),
+      samplerDecodeSteps: Math.round(clampNumber(raw.samplerDecodeSteps ?? base.samplerDecodeSteps, 1, 16, 4)),
+      noiseClamp: parsedClamp,
       pauseMs: Math.round(clampNumber(raw.pauseMs ?? base.pauseMs, 0, 2000, 220)),
       loudnorm: raw.loudnorm !== undefined ? Boolean(raw.loudnorm) : Boolean(base.loudnorm ?? true),
       effects: normalizeEffects(raw.effects || base.effects || {}),
+      rvc: normalizeRvcOptions({ ...(base.rvc || {}), ...(isPlainObject(raw.rvc) ? raw.rvc : {}) }),
     };
   }
 
@@ -182,7 +245,15 @@ export function normalizePresetShape(raw, existing = null) {
     sentenceSilence: clampNumber(raw.sentenceSilence ?? base.sentenceSilence, 0, 2.0, 0.2),
     loudnorm: raw.loudnorm !== undefined ? Boolean(raw.loudnorm) : Boolean(base.loudnorm ?? false),
     effects: normalizeEffects(raw.effects || base.effects || { pitchShift: 0.9 }),
+    rvc: normalizeRvcOptions({ ...(base.rvc || {}), ...(isPlainObject(raw.rvc) ? raw.rvc : {}) }),
   };
+}
+
+export function getRvcModelsDefaultDir() {
+  if (process.env.RVC_MODELS_DIR && process.env.RVC_MODELS_DIR.trim()) {
+    return path.resolve(process.env.RVC_MODELS_DIR.trim());
+  }
+  return path.join(os.homedir(), '.local', 'share', 'crom-youtube-studio', 'rvc-models');
 }
 
 export function getPiperModelsDefaultDir() {
@@ -330,6 +401,71 @@ export function discoverTtsEnvironment(options = {}) {
   const piperModels = Array.from(modelsMap.values()).sort((a, b) => a.name.localeCompare(b.name));
   const faberModel = modelsMap.get('pt_BR-faber-medium.onnx') || null;
   const pocketBatchScript = path.join(REPO_ROOT, 'scripts', 'tts-pocket-batch.py');
+  const rvcConvertScript = path.join(REPO_ROOT, 'scripts', 'tts-rvc-convert.py');
+
+  // 5. RVC v2 local CPU runner & models discovery (Nivel 2)
+  const rvcCandidates = [
+    process.env.RVC_LOCAL_DIR,
+    options.rvcDir,
+    path.join(home, 'Documentos', 'GitHub', 'rvc-local'),
+    path.join(home, 'Documents', 'GitHub', 'rvc-local'),
+    path.join(home, 'GitHub', 'rvc-local'),
+    path.join(home, 'rvc-local'),
+  ].filter(Boolean);
+
+  let rvcDir = '';
+  let rvcPython = '';
+  for (const dir of rvcCandidates) {
+    try {
+      const py = path.join(dir, '.venv', 'bin', 'python');
+      if (isExecutableFile(py)) {
+        rvcDir = fs.realpathSync(dir);
+        rvcPython = py;
+        break;
+      }
+    } catch {
+      // keep trying
+    }
+  }
+
+  const rvcModelDirs = [
+    process.env.RVC_MODELS_DIR,
+    options.rvcModelsDir,
+    getRvcModelsDefaultDir(),
+    rvcDir ? path.join(rvcDir, 'models') : '',
+  ].filter(Boolean);
+
+  const uniqueRvcDirs = [...new Set(rvcModelDirs.map((d) => path.resolve(d)))];
+  const rvcModelsMap = new Map();
+  for (const dir of uniqueRvcDirs) {
+    if (!fs.existsSync(dir)) continue;
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      const indexFiles = entries.filter((e) => e.isFile() && e.name.endsWith('.index')).map((e) => e.name);
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith('.pth')) continue;
+        if (!rvcModelsMap.has(entry.name)) {
+          const pthPath = path.join(dir, entry.name);
+          const stem = entry.name.replace(/\.pth$/i, '');
+          const exactIdx = `${stem}.index`;
+          const matchedIndex =
+            indexFiles.find((n) => n === exactIdx) ||
+            indexFiles.find((n) => n.includes(stem)) ||
+            (indexFiles.length === 1 ? indexFiles[0] : '');
+          rvcModelsMap.set(entry.name, {
+            name: entry.name,
+            pthPath,
+            indexPath: matchedIndex ? path.join(dir, matchedIndex) : '',
+            sizeBytes: fs.statSync(pthPath).size,
+            dir,
+          });
+        }
+      }
+    } catch {
+      // ignore unreadable dirs
+    }
+  }
+  const rvcModels = Array.from(rvcModelsMap.values()).sort((a, b) => a.name.localeCompare(b.name));
 
   return {
     ffmpeg: {
@@ -355,6 +491,15 @@ export function discoverTtsEnvironment(options = {}) {
       models: piperModels,
       hasFaberModel: Boolean(faberModel),
       faberModelPath: faberModel ? faberModel.onnxPath : '',
+    },
+    rvc: {
+      available: Boolean(rvcPython && isRegularFile(rvcConvertScript) && rvcModels.length > 0),
+      runnerAvailable: Boolean(rvcPython && isRegularFile(rvcConvertScript)),
+      dir: rvcDir,
+      pythonPath: rvcPython,
+      convertScript: rvcConvertScript,
+      defaultModelsDir: getRvcModelsDefaultDir(),
+      models: rvcModels,
     },
     pronunciationDictPath,
   };
@@ -1012,6 +1157,8 @@ async function synthesizePocketRaw(chunks, preset, rawOutWav, env, tmpDir) {
       voicePath,
       outputPath: rawOutWav,
       temperature: clampNumber(preset.temperature, 0.05, 1.5, 0.3),
+      samplerDecodeSteps: Math.round(clampNumber(preset.samplerDecodeSteps, 1, 16, 4)),
+      noiseClamp: preset.noiseClamp ?? null,
       pauseMs: Math.round(clampNumber(preset.pauseMs, 0, 2000, 220)),
       chunks,
     }),
@@ -1029,6 +1176,50 @@ async function synthesizePocketRaw(chunks, preset, rawOutWav, env, tmpDir) {
   }
 }
 
+async function applyRvcConversion(inputWav, outputWav, rvcCfg, env, tmpDir) {
+  if (!env.rvc?.runnerAvailable) {
+    throw httpError('Runner local RVC v2 (rvc-local/.venv) não encontrado neste computador.', 503);
+  }
+  const requestedName = path.basename(String(rvcCfg.modelName || '').trim());
+  const modelObj =
+    env.rvc.models.find((m) => m.name === requestedName) ||
+    (requestedName ? null : env.rvc.models[0]);
+  if (!modelObj) {
+    throw httpError(
+      `Modelo RVC "${requestedName || '(nenhum)'}" não encontrado em ${env.rvc.defaultModelsDir}.`,
+      404
+    );
+  }
+
+  const jobFile = path.join(tmpDir, `rvc-job-${crypto.randomBytes(4).toString('hex')}.json`);
+  writeFileAtomic(
+    jobFile,
+    JSON.stringify({
+      inputWav,
+      outputWav,
+      modelPath: modelObj.pthPath,
+      indexPath: modelObj.indexPath || '',
+      device: 'cpu',
+      f0UpKey: Math.round(clampNumber(rvcCfg.f0UpKey, -12, 12, 0)),
+      f0Method: rvcCfg.f0Method || 'rmvpe',
+      indexRate: clampNumber(rvcCfg.indexRate, 0, 1, 0.75),
+      protect: clampNumber(rvcCfg.protect, 0, 0.5, 0.33),
+      rmsMixRate: clampNumber(rvcCfg.rmsMixRate, 0, 1, 0.25),
+    }),
+    { backup: false }
+  );
+
+  try {
+    await execFileAsync(env.rvc.pythonPath, [env.rvc.convertScript, jobFile], {
+      cwd: env.rvc.dir,
+      timeout: 300_000,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+  } catch (err) {
+    throw httpError(`Erro na conversão RVC v2: ${err?.stderr || err.message}`, 500);
+  }
+}
+
 async function renderSegmentToWav(text, preset, destWav, env, tmpDir) {
   const rawWav = path.join(tmpDir, `raw-${crypto.randomBytes(4).toString('hex')}.wav`);
   if (preset.engine === 'pocket-tts') {
@@ -1040,7 +1231,15 @@ async function renderSegmentToWav(text, preset, destWav, env, tmpDir) {
   } else {
     await synthesizePiperRaw(text, preset, rawWav, env);
   }
-  await applyFfmpegPostProcessing(rawWav, destWav, preset, env);
+
+  let stageWav = rawWav;
+  if (preset.rvc?.enabled && preset.rvc?.modelName) {
+    const rvcWav = path.join(tmpDir, `rvc-${crypto.randomBytes(4).toString('hex')}.wav`);
+    await applyRvcConversion(rawWav, rvcWav, preset.rvc, env, tmpDir);
+    stageWav = rvcWav;
+  }
+
+  await applyFfmpegPostProcessing(stageWav, destWav, preset, env);
 }
 
 /**
@@ -1100,6 +1299,10 @@ export async function generateNarration(wsPath, options = {}) {
       effects: {
         ...(basePreset.effects || {}),
         ...(isPlainObject(options.overrides?.effects) ? options.overrides.effects : {}),
+      },
+      rvc: {
+        ...(basePreset.rvc || {}),
+        ...(isPlainObject(options.overrides?.rvc) ? options.overrides.rvc : {}),
       },
       ...(options.loudnorm !== undefined ? { loudnorm: Boolean(options.loudnorm) } : {}),
     },

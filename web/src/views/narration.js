@@ -44,7 +44,10 @@ function applyPresetValuesToState(preset) {
   ns.selectedPresetId = preset.id;
   ns.loudnorm = Boolean(preset.loudnorm);
   if (preset.engine === 'pocket-tts') {
+    ns.voiceFile = String(preset.voiceFile || 'mrj_pt24l_ref01.safetensors');
     ns.temperature = Number(preset.temperature ?? 0.3);
+    ns.samplerDecodeSteps = Number(preset.samplerDecodeSteps ?? 4);
+    ns.noiseClamp = Number(preset.noiseClamp ?? 2.5);
     ns.pauseMs = Number(preset.pauseMs ?? 220);
   } else {
     ns.lengthScale = Number(preset.lengthScale ?? 1.5);
@@ -57,6 +60,12 @@ function applyPresetValuesToState(preset) {
   ns.reverb = Number(fx.reverb ?? 0);
   ns.bassDb = Number(fx.bassDb ?? 0);
   ns.trebleDb = Number(fx.trebleDb ?? 0);
+  const rvc = preset.rvc || {};
+  ns.rvcEnabled = Boolean(rvc.enabled);
+  ns.rvcModelName = String(rvc.modelName || ns.rvcModelName || '');
+  ns.rvcF0UpKey = Number(rvc.f0UpKey ?? 0);
+  ns.rvcIndexRate = Number(rvc.indexRate ?? 0.75);
+  ns.rvcProtect = Number(rvc.protect ?? 0.33);
 }
 
 function buildOverridesFromState(preset) {
@@ -67,12 +76,23 @@ function buildOverridesFromState(preset) {
     bassDb: Number(ns.bassDb ?? 0),
     trebleDb: Number(ns.trebleDb ?? 0),
   };
+  const rvc = {
+    enabled: Boolean(ns.rvcEnabled),
+    modelName: String(ns.rvcModelName || '').trim(),
+    f0UpKey: Number(ns.rvcF0UpKey ?? 0),
+    indexRate: Number(ns.rvcIndexRate ?? 0.75),
+    protect: Number(ns.rvcProtect ?? 0.33),
+  };
   if (preset?.engine === 'pocket-tts') {
     return {
+      voiceFile: String(ns.voiceFile || preset.voiceFile || 'mrj_pt24l_ref01.safetensors'),
       temperature: Number(ns.temperature ?? 0.3),
+      samplerDecodeSteps: Number(ns.samplerDecodeSteps ?? 4),
+      noiseClamp: Number(ns.noiseClamp) > 0 ? Number(ns.noiseClamp) : null,
       pauseMs: Number(ns.pauseMs ?? 220),
       loudnorm: Boolean(ns.loudnorm),
       effects: fx,
+      rvc,
     };
   }
   return {
@@ -82,6 +102,7 @@ function buildOverridesFromState(preset) {
     sentenceSilence: Number(ns.sentenceSilence ?? 0.2),
     loudnorm: Boolean(ns.loudnorm),
     effects: fx,
+    rvc,
   };
 }
 
@@ -283,6 +304,10 @@ export async function renderNarrationView(container) {
             <span>🎛️ FFmpeg</span>
             <strong>${env.ffmpeg?.available ? 'Ativo' : 'Ausente'}</strong>
           </div>
+          <div class="nar-engine-pill ${env.rvc?.available ? 'is-ok' : 'is-warn'}">
+            <span>✨ RVC v2 (Nível 2)</span>
+            <strong>${env.rvc?.available ? `Pronto (${(env.rvc.models || []).length} .pth)` : env.rvc?.runnerAvailable ? 'Aguardando .pth' : 'Não configurado'}</strong>
+          </div>
         </div>
       </div>
 
@@ -381,7 +406,29 @@ export async function renderNarrationView(container) {
             </div>
 
             ${isPocket
-              ? `<div class="nar-sliders-grid">
+              ? `<div style="margin-bottom:4px;">
+                  <label>
+                    <span class="nar-field-label">Referência de Voz (.safetensors / .wav)</span>
+                    <select class="select-dark" id="narPocketVoiceSelect" style="width:100%;">
+                      ${(env.pocketTts?.voices?.length ? env.pocketTts.voices : [ns.voiceFile || 'mrj_pt24l_ref01.safetensors'])
+                        .map(
+                          (vf) =>
+                            `<option value="${MD.escapeHtml(vf)}"${vf === ns.voiceFile ? ' selected' : ''}>${MD.escapeHtml(vf)}</option>`
+                        )
+                        .join('')}
+                    </select>
+                  </label>
+                </div>
+                <div class="nar-sliders-grid">
+                  <label class="nar-slider-item">
+                    <div class="nar-slider-head"><span>Passos de Decodificação (Qualidade)</span><strong id="valDecodeSteps">${Math.round(ns.samplerDecodeSteps || 4)} passos</strong></div>
+                    <input type="range" id="rngDecodeSteps" min="1" max="10" step="1" value="${Math.round(ns.samplerDecodeSteps || 4)}">
+                    <div class="nar-slider-scale"><span>1 (Rápido)</span><span>4–6 (Fiel)</span><span>10 (Máx)</span></div>
+                  </label>
+                  <label class="nar-slider-item">
+                    <div class="nar-slider-head"><span>Noise Clamp (Estabilidade)</span><strong id="valNoiseClamp">${Number(ns.noiseClamp) > 0 ? Number(ns.noiseClamp).toFixed(1) : 'Off'}</strong></div>
+                    <input type="range" id="rngNoiseClamp" min="0" max="4.5" step="0.25" value="${Number(ns.noiseClamp || 0)}">
+                  </label>
                   <label class="nar-slider-item">
                     <div class="nar-slider-head"><span>Temperatura (Expressividade)</span><strong id="valTemp">${Number(ns.temperature).toFixed(2)}</strong></div>
                     <input type="range" id="rngTemp" min="0.05" max="1.00" step="0.05" value="${Number(ns.temperature)}">
@@ -439,6 +486,49 @@ export async function renderNarrationView(container) {
                 <input type="range" id="rngTreble" min="-12" max="12" step="1" value="${Number(ns.trebleDb)}">
               </label>
             </div>
+          </div>
+
+          <!-- Camada Nível 2: RVC v2 Local (Pós-conversão de timbre na CPU) -->
+          <div class="nar-params-box">
+            <div class="nar-params-title">
+              <span>✨ Nível 2: Conversão de Timbre RVC v2 (CPU Local)</span>
+              <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--text-2); cursor:pointer;">
+                <input type="checkbox" id="narRvcEnabledCheck" ${ns.rvcEnabled ? 'checked' : ''} ${!(env.rvc?.models?.length) ? 'disabled' : ''}>
+                Ativar RVC v2
+              </label>
+            </div>
+            ${env.rvc?.models?.length
+              ? `<div style="display:flex; flex-direction:column; gap:10px;">
+                  <label>
+                    <span class="nar-field-label">Modelo Treinado (.pth + .index)</span>
+                    <select class="select-dark" id="narRvcModelSelect" style="width:100%;">
+                      <option value="">Selecionar modelo...</option>
+                      ${env.rvc.models
+                        .map(
+                          (m) =>
+                            `<option value="${MD.escapeHtml(m.name)}"${m.name === ns.rvcModelName ? ' selected' : ''}>${MD.escapeHtml(m.name)}${m.indexPath ? ' (+ index)' : ''}</option>`
+                        )
+                        .join('')}
+                    </select>
+                  </label>
+                  <div class="nar-sliders-grid">
+                    <label class="nar-slider-item">
+                      <div class="nar-slider-head"><span>Ajuste Semitons (f0)</span><strong id="valRvcPitch">${Math.round(ns.rvcF0UpKey)}</strong></div>
+                      <input type="range" id="rngRvcPitch" min="-12" max="12" step="1" value="${Math.round(ns.rvcF0UpKey)}">
+                    </label>
+                    <label class="nar-slider-item">
+                      <div class="nar-slider-head"><span>Fidelidade Timbre (Index)</span><strong id="valRvcIndex">${Number(ns.rvcIndexRate).toFixed(2)}</strong></div>
+                      <input type="range" id="rngRvcIndex" min="0.00" max="1.00" step="0.05" value="${Number(ns.rvcIndexRate)}">
+                    </label>
+                    <label class="nar-slider-item">
+                      <div class="nar-slider-head"><span>Proteção Consoantes</span><strong id="valRvcProtect">${Number(ns.rvcProtect).toFixed(2)}</strong></div>
+                      <input type="range" id="rngRvcProtect" min="0.00" max="0.50" step="0.01" value="${Number(ns.rvcProtect)}">
+                    </label>
+                  </div>
+                </div>`
+              : `<div style="font-size:12px; color:var(--text-3); line-height:1.45;">
+                  Runner RVC CPU <strong>${env.rvc?.runnerAvailable ? 'pronto' : 'não encontrado'}</strong>. Para ativar o Nível 2, treine seu modelo no Colab T4 usando <code>gravacoes/clonagem-voz/dataset-rvc/treinar-mrj-rvc-colab.ipynb</code> e copie <code>mrj_rvc.pth</code> + <code>.index</code> para <code>${MD.escapeHtml(env.rvc?.defaultModelsDir || '~/.local/share/crom-youtube-studio/rvc-models')}</code> (veja <code>04-producao/voz-nivel2-rvc-colab.md</code>).
+                </div>`}
           </div>
 
           <div style="display:grid; grid-template-columns:1.2fr 1fr; gap:10px;">
@@ -730,6 +820,18 @@ function bindNarrationViewEvents(container, channelKey, presets, categories) {
   document.getElementById('narLoudnormCheck')?.addEventListener('change', (e) => {
     ns.loudnorm = Boolean(e.target.checked);
   });
+  document.getElementById('narPocketVoiceSelect')?.addEventListener('change', (e) => {
+    ns.voiceFile = e.target.value;
+  });
+  document.getElementById('narRvcEnabledCheck')?.addEventListener('change', (e) => {
+    ns.rvcEnabled = Boolean(e.target.checked);
+    if (ns.rvcEnabled && !ns.rvcModelName && state.narrationState.env?.rvc?.models?.length) {
+      ns.rvcModelName = state.narrationState.env.rvc.models[0].name;
+    }
+  });
+  document.getElementById('narRvcModelSelect')?.addEventListener('change', (e) => {
+    ns.rvcModelName = e.target.value;
+  });
 
   const bindRange = (id, labelId, key, fmt) => {
     const inp = document.getElementById(id);
@@ -742,6 +844,8 @@ function bindNarrationViewEvents(container, channelKey, presets, categories) {
     };
   };
   bindRange('rngTemp', 'valTemp', 'temperature', (v) => v.toFixed(2));
+  bindRange('rngDecodeSteps', 'valDecodeSteps', 'samplerDecodeSteps', (v) => `${Math.round(v)} passos`);
+  bindRange('rngNoiseClamp', 'valNoiseClamp', 'noiseClamp', (v) => (v > 0 ? v.toFixed(1) : 'Off'));
   bindRange('rngPauseMs', 'valPauseMs', 'pauseMs', (v) => `${Math.round(v)} ms`);
   bindRange('rngLengthScale', 'valLengthScale', 'lengthScale', (v) => `${v.toFixed(2)}x`);
   bindRange('rngNoiseScale', 'valNoiseScale', 'noiseScale', (v) => v.toFixed(2));
@@ -751,6 +855,9 @@ function bindNarrationViewEvents(container, channelKey, presets, categories) {
   bindRange('rngReverb', 'valReverb', 'reverb', (v) => `${Math.round(v)}%`);
   bindRange('rngBass', 'valBass', 'bassDb', (v) => `${Math.round(v)} dB`);
   bindRange('rngTreble', 'valTreble', 'trebleDb', (v) => `${Math.round(v)} dB`);
+  bindRange('rngRvcPitch', 'valRvcPitch', 'rvcF0UpKey', (v) => `${Math.round(v)}`);
+  bindRange('rngRvcIndex', 'valRvcIndex', 'rvcIndexRate', (v) => v.toFixed(2));
+  bindRange('rngRvcProtect', 'valRvcProtect', 'rvcProtect', (v) => v.toFixed(2));
 
   document.getElementById('narSavePresetBtn')?.addEventListener('click', async () => {
     const suggested = activePreset.builtin ? `${activePreset.id}-custom` : activePreset.name;

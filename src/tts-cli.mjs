@@ -28,6 +28,13 @@ Opções principais:
   --pitch <float>             Override de pitch shift (0.50 a 2.00)
   --velocidade <float>        Override de lengthScale Piper (0.50 a 2.50)
   --temp <float>              Override de temperatura Pocket TTS (0.05 a 1.50)
+  --passos <int>              Passos de decodificação Pocket TTS (1 a 16)
+  --noise-clamp <float>       Noise clamp Pocket TTS (ex: 2.5; 0 = desativa)
+  --voz-arquivo <arquivo>     Arquivo .safetensors/.wav específico em Pocket TTS voices/
+  --rvc <modelo.pth>          Ativa conversão Nível 2 RVC v2 local com o modelo .pth
+  --rvc-pitch <int>           Ajuste de semitons no RVC (-12 a 12; padrão: 0)
+  --rvc-index-rate <float>    Peso do índice FAISS no RVC (0.0 a 1.0; padrão: 0.75)
+  --rvc-protect <float>       Proteção de consoantes no RVC (0.0 a 0.5; padrão: 0.33)
   --sem-limpeza               Não limpa marcações [GANCHO]/[TELA]/Markdown
   --baixar-piper              Baixa o modelo pt_BR-faber-medium.onnx localmente
   --status                    Mostra status de disponibilidade dos motores locais
@@ -76,8 +83,9 @@ export async function runTtsCli(argv = process.argv.slice(2)) {
       console.log(JSON.stringify({ ok: true, channel: channelKey, env }, null, 2));
     } else {
       console.log(`[TTS Status — canal ${channelKey}]`);
-      console.log(`- Pocket TTS (Voz MrJ): ${env.pocketTts.available ? `OK (${env.pocketTts.dir})` : 'Indisponível'}`);
+      console.log(`- Pocket TTS (Voz MrJ): ${env.pocketTts.available ? `OK (${env.pocketTts.dir} | vozes: ${env.pocketTts.voices.join(', ')})` : 'Indisponível'}`);
       console.log(`- Piper ONNX (Voz Crom): ${env.piper.binaryAvailable ? `binário OK (${env.piper.binaryPath})` : 'binário ausente'} | pt_BR-faber-medium: ${env.piper.hasFaberModel ? 'OK' : 'não baixado'}`);
+      console.log(`- RVC v2 (Nível 2 CPU): ${env.rvc.runnerAvailable ? `runner OK (${env.rvc.models.length} modelo(s) .pth em ${env.rvc.defaultModelsDir})` : 'runner não configurado (opcional)'}`);
       console.log(`- FFmpeg: ${env.ffmpeg.available ? `OK (${env.ffmpeg.path})` : 'Indisponível'}`);
     }
     return 0;
@@ -123,9 +131,28 @@ export async function runTtsCli(argv = process.argv.slice(2)) {
   const pitch = getOptionalNumberArg(argv, '--pitch');
   const speed = getOptionalNumberArg(argv, '--velocidade');
   const temp = getOptionalNumberArg(argv, '--temp');
+  const steps = getOptionalNumberArg(argv, '--passos');
+  const noiseClamp = getOptionalNumberArg(argv, '--noise-clamp');
+  const voiceFile = getCliArg(argv, '--voz-arquivo');
+  const rvcModel = getCliArg(argv, '--rvc');
+  const rvcPitch = getOptionalNumberArg(argv, '--rvc-pitch');
+  const rvcIndexRate = getOptionalNumberArg(argv, '--rvc-index-rate');
+  const rvcProtect = getOptionalNumberArg(argv, '--rvc-protect');
   if (pitch !== undefined) overrides.effects = { pitchShift: pitch };
   if (speed !== undefined) overrides.lengthScale = speed;
   if (temp !== undefined) overrides.temperature = temp;
+  if (steps !== undefined) overrides.samplerDecodeSteps = steps;
+  if (noiseClamp !== undefined) overrides.noiseClamp = noiseClamp;
+  if (voiceFile) overrides.voiceFile = voiceFile;
+  if (rvcModel) {
+    overrides.rvc = {
+      enabled: true,
+      modelName: rvcModel,
+      ...(rvcPitch !== undefined ? { f0UpKey: rvcPitch } : {}),
+      ...(rvcIndexRate !== undefined ? { indexRate: rvcIndexRate } : {}),
+      ...(rvcProtect !== undefined ? { protect: rvcProtect } : {}),
+    };
+  }
 
   const loudnorm = argv.includes('--loudnorm') ? true : argv.includes('--no-loudnorm') ? false : undefined;
 

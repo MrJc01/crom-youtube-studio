@@ -515,6 +515,21 @@ export async function runDoctor(passedConfig = null) {
       : 'Instale o binário piper e o modelo pt_BR-faber-medium.onnx.',
   });
 
+  addCheck({
+    id: 'tts-rvc',
+    category: 'tts',
+    channel: 'system',
+    level: 'info',
+    title: ttsEnv.rvc?.available
+      ? `RVC v2 (Nível 2) pronto (${ttsEnv.rvc.models.length} modelo(s) .pth)`
+      : ttsEnv.rvc?.runnerAvailable
+      ? 'RVC v2 runner pronto (aguardando modelo .pth)'
+      : 'RVC v2 local não configurado (opcional)',
+    message: ttsEnv.rvc?.runnerAvailable
+      ? `Pasta de modelos: ${ttsEnv.rvc.defaultModelsDir}`
+      : 'Configure rvc-local (.venv) + modelo .pth para conversão de timbre Nível 2 em CPU.',
+  });
+
   // 8. Disk space (df -k)
   const firstWs = (config.channelOrder || [])
     .map((k) => config.channels[k]?.workspacePath)
