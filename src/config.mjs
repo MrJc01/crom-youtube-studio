@@ -67,6 +67,16 @@ export function findConfigPath(argv = process.argv.slice(2)) {
 export const VALID_CHANNEL_KEY_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 export const VALID_CHANNEL_STATUSES = new Set(['ativo', 'pausado', 'oculto']);
 
+function normalizeRemoteConfig(rawRemote) {
+  const r = rawRemote && typeof rawRemote === 'object' && !Array.isArray(rawRemote) ? rawRemote : {};
+  return {
+    lanEnabled: Boolean(r.lanEnabled),
+    pinEnabled: Boolean(r.pinEnabled),
+    pinCode: r.pinCode !== undefined && r.pinCode !== null ? String(r.pinCode).trim() : '',
+    ngrokAuthtoken: typeof r.ngrokAuthtoken === 'string' ? r.ngrokAuthtoken.trim() : '',
+  };
+}
+
 function normalizeChannelLinks(rawLinks) {
   if (!rawLinks || typeof rawLinks !== 'object' || Array.isArray(rawLinks)) return {};
   const out = {};
@@ -163,6 +173,7 @@ export function loadConfig(argv = process.argv.slice(2), { ignoreEnv = false } =
     kdenliveRootRaw,
     channelOrder,
     channels,
+    remote: normalizeRemoteConfig(raw.remote),
   };
 }
 
@@ -219,6 +230,12 @@ export function getEditableConfig(config) {
     kdenliveExists: Boolean(config.kdenliveRoot && fs.existsSync(config.kdenliveRoot)),
     channelOrder: [...(config.channelOrder || [])],
     channels: channelsOut,
+    remote: {
+      lanEnabled: Boolean(config.remote?.lanEnabled),
+      pinEnabled: Boolean(config.remote?.pinEnabled),
+      pinConfigured: Boolean(config.remote?.pinCode),
+      hasNgrokAuthtoken: Boolean(config.remote?.ngrokAuthtoken),
+    },
   };
 }
 
@@ -264,7 +281,50 @@ export function serializeRawConfig(config) {
     defaultChannel: String(config.defaultChannel || config.channelOrder?.[0] || ''),
     kdenliveRoot: String(config.kdenliveRootRaw ?? config.kdenliveRoot ?? ''),
     channels,
+    remote: normalizeRemoteConfig(config.remote),
   };
+}
+
+function applyRemotePatch(existingRemote, patch = {}) {
+  const out = normalizeRemoteConfig(existingRemote);
+  if (!patch || typeof patch !== 'object') return out;
+
+  if (patch.lanEnabled !== undefined) {
+    out.lanEnabled = Boolean(patch.lanEnabled);
+  }
+
+  if (patch.clearPin === true || patch.pinCode === null) {
+    out.pinCode = '';
+  } else if (patch.pinCode !== undefined) {
+    const cleanedPin = String(patch.pinCode).trim();
+    if (cleanedPin) {
+      if (cleanedPin.length < 4 || cleanedPin.length > 32) {
+        throw Object.assign(new Error('O PIN deve ter entre 4 e 32 caracteres.'), { statusCode: 400 });
+      }
+      out.pinCode = cleanedPin;
+    }
+  }
+
+  if (patch.pinEnabled !== undefined) {
+    const nextPinEnabled = Boolean(patch.pinEnabled);
+    if (nextPinEnabled && !out.pinCode) {
+      throw Object.assign(new Error('Defina um PIN (mínimo 4 dígitos/caracteres) antes de ativar a proteção por PIN.'), {
+        statusCode: 400,
+      });
+    }
+    out.pinEnabled = nextPinEnabled;
+  }
+
+  if (patch.clearNgrokAuthtoken === true || patch.ngrokAuthtoken === null) {
+    out.ngrokAuthtoken = '';
+  } else if (patch.ngrokAuthtoken !== undefined) {
+    const cleanedToken = String(patch.ngrokAuthtoken).trim();
+    if (cleanedToken) {
+      out.ngrokAuthtoken = cleanedToken;
+    }
+  }
+
+  return out;
 }
 
 function writeAndReloadConfig(config, draftRaw) {
@@ -456,9 +516,34 @@ export function saveConfigUpdates(config, payload = {}) {
     working.defaultChannel = nextOrder[0] || '';
   }
 
+  if (payload.remote && typeof payload.remote === 'object') {
+    working.remote = applyRemotePatch(working.remote, payload.remote);
+  }
+
   const restartRequired = working.port !== prevPort || working.host !== prevHost;
   writeAndReloadConfig(config, working);
   return { config, restartRequired };
+}
+
+export function saveRemoteConfigUpdates(config, patch = {}) {
+  const targetPath = getWritableConfigPath(config);
+  const diskRaw = fs.existsSync(targetPath)
+    ? JSON.parse(fs.readFileSync(targetPath, 'utf8'))
+    : serializeRawConfig(config);
+
+  const nextRemote = applyRemotePatch(diskRaw.remote ?? config.remote, patch);
+  diskRaw.remote = nextRemote;
+
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  const tmpPath = `${targetPath}.tmp.${process.pid}.${Date.now()}`;
+  fs.writeFileSync(tmpPath, `${JSON.stringify(diskRaw, null, 2)}\n`, 'utf8');
+  fs.renameSync(tmpPath, targetPath);
+
+  const runtimePort = config.port;
+  const runtimeHost = config.host;
+  const reloaded = loadConfig(['--config', targetPath], { ignoreEnv: true });
+  Object.assign(config, reloaded, { port: runtimePort, host: runtimeHost });
+  return config.remote;
 }
 
 export function addChannelToConfig(config, channelPayload = {}) {

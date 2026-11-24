@@ -47,6 +47,8 @@
     ideas: 'Ideias, Séries & GitHub',
     catalog: 'Catálogo YouTube',
     production: 'Produção & Kdenlive',
+    recorder: 'Estúdio de Gravação',
+    notes: 'Notas Rápidas',
     agent: 'Central do Agente',
     settings: 'Configurações do Workspace',
   };
@@ -61,6 +63,8 @@
     ideas: 'ideias',
     catalog: 'catalogo',
     production: 'producao',
+    recorder: 'gravar',
+    notes: 'notas',
     agent: 'agente',
     settings: 'configuracoes',
   };
@@ -91,6 +95,13 @@
     producao: 'production',
     production: 'production',
     kdenlive: 'production',
+    gravar: 'recorder',
+    gravador: 'recorder',
+    recorder: 'recorder',
+    estudio: 'recorder',
+    notas: 'notes',
+    notes: 'notes',
+    keep: 'notes',
     agente: 'agent',
     agent: 'agent',
     configuracoes: 'settings',
@@ -184,6 +195,69 @@
     scriptsFolderFilter: 'all',
     catalogFilter: 'all',
     catalogSort: 'date',
+    catalogSubTab: 'videos',
+    catalogGroupBy: 'none',
+    catalogSearch: '',
+    catalogCategoryFilter: 'all',
+    catalogStatusFilter: 'all',
+    catalogCuradoria: null,
+    catalogCuradoriaChannel: '',
+    catalogExpandedPlaylistId: null,
+    catalogLoading: false,
+    wbListSearch: '',
+    wbListModeFilter: 'all',
+    wbListLoading: false,
+    wbListFetchedChannel: '',
+    wbDeleteTargetId: null,
+    prefs: {
+      tabBarAlwaysOpen: false,
+      catalogLayout: 'stacked',
+      wbLayout: 'grid',
+    },
+    recorder: {
+      mode: 'all-and-separate',
+      pipPos: 'bottom-right',
+      pipSize: 'md',
+      status: 'idle',
+      startedAt: 0,
+      elapsedSec: 0,
+      timerId: null,
+      micLevel: 0,
+      devices: { cameras: [], mics: [] },
+      selectedCamId: '',
+      selectedMicId: '',
+      linkedDocPath: '',
+      prompterPlaying: false,
+      prompterSpeed: 2.0,
+      prompterFontSize: 22,
+      prompterRafId: null,
+      prompterLastTs: 0,
+      sessions: [],
+      sessionsChannel: '',
+      loading: false,
+      uploading: false,
+      uploadProgress: '',
+      lastSavedInfo: null,
+      activePlayer: null,
+      convertingKey: '',
+    },
+    notesState: {
+      notes: [],
+      gistSync: null,
+      channel: '',
+      loading: false,
+      search: '',
+      colorFilter: 'all',
+      labelFilter: 'all',
+      showArchived: false,
+      composerExpanded: false,
+      composerKind: 'note',
+      composerColor: 'default',
+      composerPinned: false,
+      composerChecklist: [{ id: 'c1', text: '', done: false }],
+    },
+    remoteStatus: null,
+    remoteLoading: false,
     prompter: {
       playing: false,
       speed: 2.2,
@@ -217,6 +291,11 @@
       if (saved.readerFontSize) {
         state.readerFontSize = Math.min(24, Math.max(13, Number(saved.readerFontSize)));
       }
+      state.prefs = {
+        tabBarAlwaysOpen: Boolean(saved.tabBarAlwaysOpen),
+        catalogLayout: saved.catalogLayout === 'grid' ? 'grid' : 'stacked',
+        wbLayout: saved.wbLayout === 'list' ? 'list' : 'grid',
+      };
       const reduced = global.matchMedia && global.matchMedia('(prefers-reduced-motion: reduce)').matches;
       if (reduced && saved.color === undefined) {
         state.color.dynamic = false;
@@ -372,6 +451,19 @@
     const months = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
     const mon = months[Math.max(0, Number(m[2]) - 1)] || m[2];
     return `${m[3]} ${mon} ${m[1]}`;
+  }
+
+  function formatDateTimePt(isoStr) {
+    if (!isoStr) return '—';
+    const d = new Date(isoStr);
+    if (Number.isNaN(d.getTime())) return formatDatePt(isoStr);
+    return d.toLocaleString('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
   }
 
   function copyText(text, successMsg = 'Copiado para a área de transferência!') {
@@ -585,7 +677,8 @@
           const matched = findDocMatchInChannel(channels[channelKey], rawSegs.slice(1).join('/'));
           if (matched) docPath = matched.path;
         } else if (view === 'whiteboard' && rawSegs.length > 1) {
-          boardId = rawSegs[1].trim().toLowerCase();
+          const maybeBoard = rawSegs[1].trim().toLowerCase();
+          if (maybeBoard) boardId = maybeBoard;
         }
       }
     }
@@ -743,6 +836,9 @@
     state.selectedDocPath = null;
     state.activeBoardId = null;
     state.boardsList = [];
+    state.wbListLoading = false;
+    state.wbListFetchedChannel = '';
+    state.wbDeleteTargetId = null;
     state.boardDirtyScene = null;
     state.boardActiveScene = null;
     state.boardSaveStatus = 'saved';
@@ -771,6 +867,12 @@
     state.scriptsStatusFilter = 'all';
     state.scriptsFolderFilter = 'all';
     state.catalogFilter = 'all';
+    state.catalogSearch = '';
+    state.catalogCategoryFilter = 'all';
+    state.catalogStatusFilter = 'all';
+    state.catalogExpandedPlaylistId = null;
+    state.recorder.activePlayer = null;
+    state.notesState.composerExpanded = false;
     state.chartHoverIdx = null;
     state.agentSelectedDoc = '';
     if (!preserveView || state.view === 'link') {
@@ -1143,12 +1245,16 @@
     document.getElementById('notifCount').textContent = pendingAlerts;
 
     const appEl = document.getElementById('app');
+    const wbEditorOpen = state.view === 'whiteboard' && Boolean(state.activeBoardId);
     if (appEl) {
-      appEl.className = `studio-shell view-${state.view}${state.focusMode ? ' is-focus-mode' : ''}`;
+      appEl.className = `studio-shell view-${state.view}${state.focusMode ? ' is-focus-mode' : ''}${wbEditorOpen ? ' is-wb-editor-open' : ''}`;
     }
     document.body.classList.toggle('is-focus-mode', Boolean(state.focusMode));
-    document.body.classList.toggle('is-wb-fullscreen', Boolean(state.boardFullscreen && state.view === 'whiteboard'));
+    document.body.classList.toggle('is-whiteboard-view', state.view === 'whiteboard');
+    document.body.classList.toggle('is-whiteboard-editor', wbEditorOpen);
+    document.body.classList.toggle('is-wb-fullscreen', Boolean(state.boardFullscreen && wbEditorOpen));
     document.body.classList.toggle('is-flow-fullscreen', Boolean(state.mapFlowFullscreen && state.view === 'map' && state.mapStyle === 'flowchart'));
+    updateRemoteChip();
 
     const topChip = document.getElementById('topbarChannelChip');
     if (topChip) {
@@ -1176,8 +1282,12 @@
   function setView(viewName, docPath = null, { replaceUrl = false, boardId = undefined } = {}) {
     const prevView = state.view;
     stopPrompter();
-    if (prevView === 'whiteboard' && viewName !== 'whiteboard' && state.boardDirtyScene) {
+    cleanupMapFlowObservers();
+    if (prevView === 'whiteboard' && state.boardDirtyScene && (viewName !== 'whiteboard' || (boardId !== undefined && boardId !== state.activeBoardId))) {
       flushWhiteboardSaveOnLeave();
+    }
+    if (prevView === 'recorder' && viewName !== 'recorder' && state.recorder.status === 'idle') {
+      stopRecorderMediaStreams();
     }
     if (viewName !== prevView) {
       state.tabBarPinned = null;
@@ -1195,10 +1305,15 @@
       state.activeLinkTab = null;
     }
     if (viewName === 'whiteboard' && boardId !== undefined) {
-      state.activeBoardId = boardId;
+      state.activeBoardId = boardId || null;
       state.boardDirtyScene = null;
       state.boardActiveScene = null;
+      state.boardReady = false;
+      state.boardFullscreen = false;
       state.boardSaveStatus = 'saved';
+      if (!state.activeBoardId) {
+        state.wbListFetchedChannel = '';
+      }
     }
     if (viewName === 'settings' && !state.settingsChannelKey) {
       state.settingsChannelKey = state.activeChannel;
@@ -1256,6 +1371,12 @@
         break;
       case 'production':
         renderProductionView(container);
+        break;
+      case 'recorder':
+        renderRecorderView(container);
+        break;
+      case 'notes':
+        renderNotesView(container);
         break;
       case 'agent':
         renderAgentView(container);
@@ -1316,6 +1437,8 @@
       ideas: '💡',
       catalog: '▶',
       production: '🎬',
+      recorder: '🎙',
+      notes: '📝',
       agent: '✦',
       settings: '⚙',
     };
@@ -1343,13 +1466,20 @@
       };
     }
     if (view === 'whiteboard') {
+      if (!tab.boardId) {
+        return {
+          icon: '◈',
+          title: 'Lista de Quadros',
+          chBadge: tab.channel || state.activeChannel,
+        };
+      }
       const list = tab.channel === state.activeChannel && state.boardsList.length
         ? state.boardsList
         : (chData?.boards || []);
-      const b = tab.boardId ? list.find((item) => item.id === tab.boardId) : list[0];
+      const b = list.find((item) => item.id === tab.boardId);
       return {
         icon: '◈',
-        title: b?.title || tab.title || 'Quadro & Fluxos',
+        title: b?.title || tab.boardId || tab.title || 'Quadro',
         chBadge: tab.channel || state.activeChannel,
       };
     }
@@ -1400,6 +1530,7 @@
 
   function isTabstripOpen() {
     if (state.focusMode || state.boardFullscreen || state.mapFlowFullscreen) return false;
+    if (state.prefs?.tabBarAlwaysOpen) return true;
     if (state.view === 'dashboard') return state.tabBarPinned !== false;
     return state.tabBarPinned === true;
   }
@@ -1448,7 +1579,7 @@
         savedActive.channel === routeTabSpec.channel &&
         savedActive.view === routeTabSpec.view &&
         (routeTabSpec.view !== 'scripts' || savedActive.docPath === routeTabSpec.docPath) &&
-        (routeTabSpec.view !== 'whiteboard' || !routeTabSpec.boardId || savedActive.boardId === routeTabSpec.boardId) &&
+        (routeTabSpec.view !== 'whiteboard' || (savedActive.boardId || null) === (routeTabSpec.boardId || null)) &&
         (routeTabSpec.kind !== 'link' || savedActive.externalUrl === routeTabSpec.externalUrl);
 
       if (matchesRoute) {
@@ -1551,12 +1682,21 @@
     const list = document.getElementById('studioTabsList');
     const pullBtn = document.getElementById('tabstripPullHandle');
     const badge = document.getElementById('tabstripCountBadge');
+    const pinBtn = document.getElementById('pinTabstripBtn');
     if (!wrap || !list) return;
 
     const open = isTabstripOpen();
     wrap.classList.toggle('is-tabstrip-open', open);
     if (pullBtn) pullBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (badge) badge.textContent = state.tabs.length > 0 ? String(state.tabs.length) : '';
+    if (pinBtn) {
+      const alwaysOpen = Boolean(state.prefs?.tabBarAlwaysOpen);
+      pinBtn.classList.toggle('is-pinned', alwaysOpen);
+      pinBtn.setAttribute('aria-pressed', alwaysOpen ? 'true' : 'false');
+      pinBtn.title = alwaysOpen
+        ? 'Desafixar barra de abas (recolher automaticamente nas páginas internas)'
+        : 'Fixar barra de abas aberta em todas as páginas';
+    }
 
     list.innerHTML = state.tabs
       .map((tab) => {
@@ -1633,6 +1773,8 @@
       state.activeChannel = tab.channel;
       state.settingsChannelKey = tab.channel;
       state.boardsList = [];
+      state.wbListFetchedChannel = '';
+      state.wbListLoading = false;
       state.boardReady = false;
       initSelectedSeriesForChannel(getActiveChannelData());
       const prefs = loadJsonStorage(STORAGE_KEY_PREFS, {});
@@ -1933,6 +2075,20 @@
       }
     }
 
+    const ctxBoardCard = targetEl.closest('[data-context-url]');
+    if (ctxBoardCard && ctxBoardCard.dataset.contextUrl) {
+      const ctxUrl = ctxBoardCard.dataset.contextUrl.trim();
+      const mBoard = /^\/([^/]+)\/quadro\/([^/?#]+)$/i.exec(ctxUrl);
+      if (mBoard) {
+        return {
+          kind: 'board',
+          channel: decodeURIComponent(mBoard[1]).toLowerCase(),
+          boardId: decodeURIComponent(mBoard[2]).toLowerCase(),
+          contextUrl: ctxUrl,
+        };
+      }
+    }
+
     const extLink = targetEl.closest('a[href^="http://"], a[href^="https://"]');
     if (extLink) {
       return {
@@ -2050,6 +2206,45 @@
         },
       ];
       showStudioContextMenu(e.clientX, e.clientY, title, items);
+      return;
+    }
+
+    if (resolved.kind === 'board') {
+      const targetCh = state.data?.channels?.[resolved.channel] ? resolved.channel : state.activeChannel;
+      const list = targetCh === state.activeChannel && state.boardsList.length
+        ? state.boardsList
+        : (state.data?.channels?.[targetCh]?.boards || []);
+      const boardObj = list.find((b) => b.id === resolved.boardId);
+      const bTitle = boardObj?.title || resolved.boardId;
+      const urlPath = buildFriendlyUrl(targetCh, 'whiteboard', null, resolved.boardId);
+      const fullUrl = global.location.protocol.startsWith('http')
+        ? `${global.location.origin}${urlPath}`
+        : urlPath;
+      const items = [
+        {
+          icon: '✎',
+          label: 'Abrir no Editor Excalidraw',
+          action: () => {
+            if (targetCh !== state.activeChannel) switchChannel(targetCh, { preserveView: false });
+            openBoardEditor(resolved.boardId);
+          },
+        },
+        {
+          icon: '↗',
+          label: 'Abrir em nova aba',
+          action: () => openNewTab({ kind: 'studio', channel: targetCh, view: 'whiteboard', boardId: resolved.boardId }, { activate: true }),
+        },
+        {
+          icon: '＋',
+          label: 'Abrir em aba (segundo plano)',
+          action: () => openNewTab({ kind: 'studio', channel: targetCh, view: 'whiteboard', boardId: resolved.boardId }, { activate: false }),
+        },
+        { sep: true },
+        { icon: '🔗', label: 'Copiar link (URL)', action: () => copyText(fullUrl, 'URL do quadro copiada!') },
+        { icon: '✎', label: 'Renomear quadro', action: () => openWbBoardModal('rename', resolved.boardId) },
+        { icon: '🗑', label: 'Excluir quadro', danger: true, action: () => openWbDeleteConfirmModal(resolved.boardId) },
+      ];
+      showStudioContextMenu(e.clientX, e.clientY, bTitle, items);
       return;
     }
 
@@ -3145,15 +3340,16 @@
     const groups = Array.from(groupsMap.entries()).sort((a, b) => b[1].length - a[1].length);
 
     if (layoutKind === 'blocks') {
-      const cols = groups.length <= 1 ? 1 : 2;
+      const vpW = document.getElementById('mapFlowViewport')?.clientWidth || global.innerWidth || 1200;
+      const cols = vpW < 920 ? 1 : (groups.length <= 1 ? 1 : 2);
+      const maxPerRow = vpW < 760 ? 2 : 3;
       const secPadX = 24;
-      const secPadTop = 46;
+      const secPadTop = 48;
       const secPadBot = 24;
-      const cardW = 216;
-      const cardH = 80;
-      const gapX = 34;
-      const gapY = 26;
-      const maxPerRow = 3;
+      const cardW = 232;
+      const cardH = 100;
+      const gapX = 36;
+      const gapY = 28;
       const secGapX = 46;
       const secGapY = 44;
 
@@ -3280,11 +3476,11 @@
       const extraDocs = docs.filter((d) => !knownKeys.has(d.meta.status));
       if (extraDocs.length) stages.push({ key: 'outros', label: 'Docs & Outros' });
 
-      const colW = 224;
+      const colW = 248;
       const colGap = 46;
-      const cardW = 204;
-      const cardH = 74;
-      const cardGapY = 18;
+      const cardW = 228;
+      const cardH = 98;
+      const cardGapY = 20;
       const marginX = 48;
       const headY = 48;
       const headH = 44;
@@ -3382,13 +3578,13 @@
     }
 
     // Default: 'clusters' — Constelação (Clusters)
-    const cardW = 186;
-    const cardH = 58;
+    const cardW = 228;
+    const cardH = 98;
     const clusters = groups.map(([serieName, items], idx) => {
       const n = items.length;
-      const childRx = Math.max(158, (n * 195) / (2 * Math.PI));
-      const childRy = Math.max(126, (n * 135) / (2 * Math.PI));
-      const outerR = Math.max(childRx, childRy) + 108;
+      const childRx = Math.max(210, (n * 245) / (2 * Math.PI));
+      const childRy = Math.max(170, (n * 175) / (2 * Math.PI));
+      const outerR = Math.max(childRx, childRy) + 140;
       return {
         serieName,
         items,
@@ -3401,13 +3597,13 @@
       };
     });
 
-    const totalArc = clusters.reduce((acc, c) => acc + c.outerR * 2 + 72, 0);
-    const maxClusterR = clusters.reduce((m, c) => Math.max(m, c.outerR), 220);
+    const totalArc = clusters.reduce((acc, c) => acc + c.outerR * 2 + 88, 0);
+    const maxClusterR = clusters.reduce((m, c) => Math.max(m, c.outerR), 280);
     const hubOrbitR = clusters.length <= 1
-      ? 260
-      : Math.max(400, maxClusterR + 170, totalArc / (2 * Math.PI));
+      ? 300
+      : Math.max(460, maxClusterR + 210, totalArc / (2 * Math.PI));
 
-    const worldHalf = Math.ceil(hubOrbitR + maxClusterR + 180);
+    const worldHalf = Math.ceil(hubOrbitR + maxClusterR + 220);
     const cx = worldHalf;
     const cy = worldHalf;
     const canvasSize = worldHalf * 2;
@@ -3416,18 +3612,21 @@
     const nodes = [];
     const edges = [];
     const nodeByPath = new Map();
+    const hubLinks = [];
+    const hubR = 56;
+    const minHubDist = hubR + 128;
+    const pad = 22;
 
     let angleCursor = -Math.PI / 2;
     clusters.forEach((cl) => {
       const wedge = clusters.length === 1
         ? 0
-        : ((cl.outerR * 2 + 72) / (totalArc || 1)) * Math.PI * 2;
+        : ((cl.outerR * 2 + 88) / (totalArc || 1)) * Math.PI * 2;
       const theta = clusters.length === 1 ? -Math.PI / 4 : angleCursor + wedge / 2;
       angleCursor += wedge;
 
       const hx = cx + hubOrbitR * Math.cos(theta);
       const hy = cy + hubOrbitR * Math.sin(theta);
-      const hubR = 56;
       hubs.push({
         serieName: cl.serieName,
         count: cl.items.length,
@@ -3463,18 +3662,15 @@
         };
       });
 
-      // Separação determinística AABB para garantir 0 sobreposições entre cards e com o hub
-      const pad = 16;
-      for (let iter = 0; iter < 32; iter++) {
+      // Passe 1: separação determinística intra-cluster (cards e hub da série)
+      for (let iter = 0; iter < 36; iter++) {
         for (let i = 0; i < localNodes.length; i++) {
           const a = localNodes[i];
-          // Manter longe do próprio hub da série
           const acx = a.x + a.w / 2;
           const acy = a.y + a.h / 2;
           const dxH = acx - hx;
           const dyH = acy - hy;
           const distH = Math.hypot(dxH, dyH) || 1;
-          const minHubDist = hubR + 96;
           if (distH < minHubDist) {
             const push = minHubDist - distH;
             a.x += (dxH / distH) * push;
@@ -3502,17 +3698,73 @@
       for (const node of localNodes) {
         nodes.push(node);
         nodeByPath.set(node.doc.path, node);
-        edges.push({
-          kind: 'curve',
-          fromX: hx,
-          fromY: hy,
-          toX: node.x + node.w / 2,
-          toY: node.y + node.h / 2,
-          color: `${cl.color}88`,
-          width: 1.4,
-        });
+        hubLinks.push({ node, hx, hy, color: `${cl.color}88` });
       }
     });
+
+    // Passe 2: separação global AABB entre todos os clusters, hubs e núcleo central
+    const minCenterDist = 96 + Math.hypot(cardW, cardH) / 2;
+    for (let iter = 0; iter < 28; iter++) {
+      let movedAny = false;
+      for (let i = 0; i < nodes.length; i++) {
+        const a = nodes[i];
+        const acx = a.x + a.w / 2;
+        const acy = a.y + a.h / 2;
+
+        const dxC = acx - cx;
+        const dyC = acy - cy;
+        const distC = Math.hypot(dxC, dyC) || 1;
+        if (distC < minCenterDist) {
+          const pushC = minCenterDist - distC;
+          a.x += (dxC / distC) * pushC;
+          a.y += (dyC / distC) * pushC;
+          movedAny = true;
+        }
+
+        for (const h of hubs) {
+          const dxH = (a.x + a.w / 2) - h.x;
+          const dyH = (a.y + a.h / 2) - h.y;
+          const distH = Math.hypot(dxH, dyH) || 1;
+          if (distH < minHubDist) {
+            const pushH = minHubDist - distH;
+            a.x += (dxH / distH) * pushH;
+            a.y += (dyH / distH) * pushH;
+            movedAny = true;
+          }
+        }
+
+        for (let j = i + 1; j < nodes.length; j++) {
+          const b = nodes[j];
+          const ox = Math.min(a.x + a.w + pad, b.x + b.w + pad) - Math.max(a.x, b.x);
+          const oy = Math.min(a.y + a.h + pad, b.y + b.h + pad) - Math.max(a.y, b.y);
+          if (ox > 0 && oy > 0) {
+            movedAny = true;
+            if (ox < oy) {
+              const dir = a.x <= b.x ? -1 : 1;
+              a.x += dir * (ox / 2);
+              b.x -= dir * (ox / 2);
+            } else {
+              const dir = a.y <= b.y ? -1 : 1;
+              a.y += dir * (oy / 2);
+              b.y -= dir * (oy / 2);
+            }
+          }
+        }
+      }
+      if (!movedAny) break;
+    }
+
+    for (const hl of hubLinks) {
+      edges.push({
+        kind: 'curve',
+        fromX: hl.hx,
+        fromY: hl.hy,
+        toX: hl.node.x + hl.node.w / 2,
+        toY: hl.node.y + hl.node.h / 2,
+        color: hl.color,
+        width: 1.4,
+      });
+    }
 
     for (const se of seqEdges) {
       const a = nodeByPath.get(se.fromPath);
@@ -3644,20 +3896,25 @@
         const d = n.doc;
         const st = d.meta.status || 'ideia';
         const vis = STATUS_VISUAL[st] || STATUS_VISUAL.ideia;
+        const fullTitle = d.meta.titulo || d.name || d.path;
         return `
           <button
             type="button"
             class="map-flow-node"
             data-flow-doc="${MD.escapeHtml(d.path)}"
+            title="${MD.escapeHtml(fullTitle)}"
             style="left:${Math.round(n.x)}px; top:${Math.round(n.y)}px; width:${n.w}px; height:${n.h}px; --st-color:${vis.color};"
           >
             <div class="mfn-top">
               <span class="mfn-badge" style="background:${n.badgeColor};">${MD.escapeHtml(n.badge)}</span>
-              <span class="mfn-status-dot" style="background:${vis.color};" title="${MD.escapeHtml(vis.label)}"></span>
+              <span class="mfn-status-wrap" style="color:${vis.color};">
+                <span class="mfn-status-dot" style="background:${vis.color};" title="${MD.escapeHtml(vis.label)}"></span>
+                ${n.badge !== vis.label ? `<span>${MD.escapeHtml(vis.label)}</span>` : ''}
+              </span>
             </div>
-            <div class="mfn-title">${MD.escapeHtml(d.meta.titulo)}</div>
+            <div class="mfn-title">${MD.escapeHtml(fullTitle)}</div>
             <div class="mfn-meta">
-              <span>${MD.escapeHtml(vis.label)}</span>
+              <span>${MD.escapeHtml(d.meta.serie || d.topFolder || vis.label)}</span>
               <span>${formatNumber(d.stats?.words || 0)} pal.</span>
             </div>
           </button>
@@ -3937,6 +4194,28 @@
     }
   }
 
+  let mapFlowResizeObserver = null;
+  let mapFlowPointerCleanups = [];
+
+  function cleanupMapFlowObservers() {
+    if (mapFlowResizeObserver) {
+      try {
+        mapFlowResizeObserver.disconnect();
+      } catch {
+        // ignora
+      }
+      mapFlowResizeObserver = null;
+    }
+    while (mapFlowPointerCleanups.length) {
+      const fn = mapFlowPointerCleanups.pop();
+      try {
+        fn();
+      } catch {
+        // ignora
+      }
+    }
+  }
+
   function applyFlowViewportTransform(viewport, model) {
     const canvas = document.getElementById('mapFlowCanvas');
     if (canvas) {
@@ -3952,16 +4231,47 @@
   function fitFlowchartToViewport(model) {
     const vp = document.getElementById('mapFlowViewport');
     if (!vp || !model) return;
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    const expandBox = (x1, y1, x2, y2) => {
+      if (Number.isFinite(x1)) minX = Math.min(minX, x1);
+      if (Number.isFinite(y1)) minY = Math.min(minY, y1);
+      if (Number.isFinite(x2)) maxX = Math.max(maxX, x2);
+      if (Number.isFinite(y2)) maxY = Math.max(maxY, y2);
+    };
+
+    for (const n of model.nodes || []) expandBox(n.x, n.y, n.x + n.w, n.y + n.h);
+    for (const h of model.hubs || []) expandBox(h.x - h.r, h.y - h.r, h.x + h.r, h.y + h.r);
+    if (model.center) expandBox(model.center.x - 95, model.center.y - 45, model.center.x + 95, model.center.y + 45);
+    for (const s of model.sections || []) expandBox(s.x, s.y, s.x + s.w, s.y + s.h);
+    for (const sh of model.stageHeaders || []) expandBox(sh.x, sh.y, sh.x + sh.w, sh.y + sh.h);
+
+    if (!Number.isFinite(minX) || !Number.isFinite(maxX)) {
+      minX = 0;
+      minY = 0;
+      maxX = model.width || 900;
+      maxY = model.height || 540;
+    }
+
+    const margin = 52;
+    const boxW = Math.max(120, (maxX - minX) + margin * 2);
+    const boxH = Math.max(120, (maxY - minY) + margin * 2);
     const vw = vp.clientWidth || 900;
     const vh = vp.clientHeight || 540;
-    const fitZoom = Math.min(1, Math.max(0.32, Math.min((vw - 48) / model.width, (vh - 48) / model.height)));
+    const fitZoom = Math.min(1.05, Math.max(0.14, Math.min(vw / boxW, vh / boxH)));
     state.mapFlowZoom = Number(fitZoom.toFixed(2));
-    state.mapFlowPanX = Math.round((vw - model.width * state.mapFlowZoom) / 2);
-    state.mapFlowPanY = Math.round((vh - model.height * state.mapFlowZoom) / 2);
+    const boxCx = (minX + maxX) / 2;
+    const boxCy = (minY + maxY) / 2;
+    state.mapFlowPanX = Math.round(vw / 2 - boxCx * state.mapFlowZoom);
+    state.mapFlowPanY = Math.round(vh / 2 - boxCy * state.mapFlowZoom);
     applyFlowViewportTransform(vp, model);
   }
 
   function renderMapView(container) {
+    cleanupMapFlowObservers();
     const chData = getActiveChannelData();
     const docsAll = chData.docs || [];
     const docsPool = state.mapHideMeta
@@ -4143,7 +4453,7 @@
               <button type="button" class="${state.mapStyle === 'cards' && state.mapGroupBy === 'mosaic' ? 'active' : ''}" data-map-group="mosaic">Mosaico por Status</button>
               <button type="button" class="${state.mapStyle === 'cards' && state.mapGroupBy === 'folder' ? 'active' : ''}" data-map-group="folder">Por Pasta</button>
             </div>
-            <input type="search" class="search-box-sm" id="mapSearchInput" placeholder="Buscar no mapa..." value="${MD.escapeHtml(state.mapSearch)}" style="width:220px; margin:0; height:32px;">
+            <input type="search" class="search-box-sm" id="mapSearchInput" placeholder="Buscar no mapa..." value="${MD.escapeHtml(state.mapSearch)}">
           </div>
           <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
             <button type="button" class="btn-sm${state.mapStyle === 'flowchart' ? ' btn-accent' : ''}" id="mapStyleToggleBtn">${state.mapStyle === 'flowchart' ? '▦ Estilo: Cartões' : '◈ Estilo: Fluxograma'}</button>
@@ -4259,9 +4569,10 @@
       const tooltip = document.getElementById('mapFlowTooltip');
       if (vp) {
         let dragState = null;
-        vp.addEventListener('mousedown', (e) => {
-          if (e.button !== 0) return;
+        vp.addEventListener('pointerdown', (e) => {
+          if (e.pointerType === 'mouse' && e.button !== 0) return;
           dragState = {
+            pointerId: e.pointerId,
             startX: e.clientX,
             startY: e.clientY,
             origPanX: state.mapFlowPanX,
@@ -4270,8 +4581,8 @@
             targetNode: e.target.closest('[data-flow-doc]'),
           };
         });
-        const onMove = (e) => {
-          if (!dragState) return;
+        const onPointerMove = (e) => {
+          if (!dragState || e.pointerId !== dragState.pointerId) return;
           const dx = e.clientX - dragState.startX;
           const dy = e.clientY - dragState.startY;
           if (!dragState.moved && Math.hypot(dx, dy) > 5) {
@@ -4284,23 +4595,53 @@
             applyFlowViewportTransform(vp, flowModel);
           }
         };
-        const onUp = (e) => {
-          if (!dragState) return;
+        const onPointerEnd = (e) => {
+          if (!dragState || e.pointerId !== dragState.pointerId) return;
           const wasMoved = dragState.moved;
           const nodeBtn = dragState.targetNode;
           dragState = null;
           vp.classList.remove('is-panning');
-          if (!wasMoved && nodeBtn && !(e.ctrlKey || e.metaKey)) {
+          if (!wasMoved && nodeBtn && !(e.ctrlKey || e.metaKey) && e.type === 'pointerup') {
             state.mapFlowFullscreen = false;
             setView('scripts', nodeBtn.dataset.flowDoc);
           }
         };
-        vp.addEventListener('mousemove', onMove);
-        if (global._cromMapFlowUp) {
-          global.removeEventListener('mouseup', global._cromMapFlowUp);
+        global.addEventListener('pointermove', onPointerMove);
+        global.addEventListener('pointerup', onPointerEnd);
+        global.addEventListener('pointercancel', onPointerEnd);
+        mapFlowPointerCleanups.push(() => {
+          global.removeEventListener('pointermove', onPointerMove);
+          global.removeEventListener('pointerup', onPointerEnd);
+          global.removeEventListener('pointercancel', onPointerEnd);
+        });
+
+        if (global.ResizeObserver) {
+          let lastVpW = vp.clientWidth;
+          let lastVpH = vp.clientHeight;
+          mapFlowResizeObserver = new ResizeObserver((entries) => {
+            if (state.view !== 'map' || state.mapStyle !== 'flowchart') return;
+            const entry = entries[0];
+            const nw = Math.round(entry?.contentRect?.width || vp.clientWidth || 0);
+            const nh = Math.round(entry?.contentRect?.height || vp.clientHeight || 0);
+            if (!nw || !nh) return;
+            const crossedBreak =
+              state.mapFlowLayout === 'blocks' &&
+              ((lastVpW < 920) !== (nw < 920) || (lastVpW < 760) !== (nw < 760));
+            if (crossedBreak) {
+              lastVpW = nw;
+              lastVpH = nh;
+              state.mapFlowAutoFitKey = '';
+              renderMapView(container);
+              return;
+            }
+            if (Math.abs(nw - lastVpW) > 10 || Math.abs(nh - lastVpH) > 10) {
+              lastVpW = nw;
+              lastVpH = nh;
+              fitFlowchartToViewport(flowModel);
+            }
+          });
+          mapFlowResizeObserver.observe(vp);
         }
-        global._cromMapFlowUp = onUp;
-        global.addEventListener('mouseup', onUp);
 
         vp.addEventListener(
           'wheel',
@@ -4361,6 +4702,7 @@
   let wbSaveInFlight = false;
   let wbPendingBoardLoad = null;
   let wbBoardModalMode = 'create'; // 'create' | 'rename'
+  let wbBoardModalTargetId = null;
   const wbSnapshotWaiters = new Map();
 
   function updateWhiteboardSaveBadge() {
@@ -4587,7 +4929,78 @@
       postLoadSceneToFrame(json);
     } catch (err) {
       showToast(err.message);
+      const frameEl = document.getElementById('excalidrawFrame');
+      if (state.view === 'whiteboard' && (!frameEl || !frameEl.dataset.loadedBoardId)) {
+        await backToWhiteboardList({ skipSave: true });
+      }
     }
+  }
+
+  async function fetchBoardsListForChannel(ch = state.activeChannel, { force = false } = {}) {
+    if (!state.serverMode || state.wbListLoading) return state.boardsList;
+    if (!force && state.wbListFetchedChannel === ch) return state.boardsList;
+    state.wbListLoading = true;
+    try {
+      const res = await fetch(`/api/boards?channel=${encodeURIComponent(ch)}`, { cache: 'no-store' });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Erro ao listar quadros');
+      if (state.activeChannel !== ch) return state.boardsList;
+      state.boardsList = Array.isArray(json.boards) ? json.boards : [];
+      state.wbListFetchedChannel = ch;
+      if (state.data?.channels?.[ch]) {
+        state.data.channels[ch].boards = state.boardsList;
+      }
+      if (state.view === 'whiteboard' && !state.activeBoardId) {
+        updateWhiteboardListBodyOnly();
+      } else if (state.view === 'whiteboard') {
+        syncWhiteboardTopbarUI();
+      }
+      return state.boardsList;
+    } catch (err) {
+      showToast(err.message);
+      return state.boardsList;
+    } finally {
+      state.wbListLoading = false;
+    }
+  }
+
+  function openBoardEditor(boardId) {
+    if (!boardId) return;
+    state.activeBoardId = boardId;
+    state.boardDirtyScene = null;
+    state.boardActiveScene = null;
+    state.boardSaveStatus = 'saved';
+    state.boardReady = false;
+    syncActiveTabFromState();
+    syncBrowserUrl({ replace: false });
+    updateHeaderChrome();
+    renderCurrentView();
+  }
+
+  async function backToWhiteboardList({ skipSave = false } = {}) {
+    if (!skipSave && state.serverMode && state.activeBoardId && state.boardDirtyScene) {
+      await saveActiveBoard({ reason: 'leave-editor', forceSnapshot: false });
+    }
+    if (wbAutoSaveTimer) {
+      clearTimeout(wbAutoSaveTimer);
+      wbAutoSaveTimer = null;
+    }
+    if (state.boardFullscreen) {
+      state.boardFullscreen = false;
+      if (document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+    }
+    state.activeBoardId = null;
+    state.boardDirtyScene = null;
+    state.boardActiveScene = null;
+    state.boardReady = false;
+    state.boardSaveStatus = 'saved';
+    state.wbListFetchedChannel = '';
+    syncActiveTabFromState();
+    syncBrowserUrl({ replace: false });
+    updateHeaderChrome();
+    renderCurrentView();
   }
 
   async function initWhiteboardSession() {
@@ -4602,35 +5015,15 @@
       if (!res.ok) throw new Error(json.error || 'Erro ao listar quadros');
       if (state.activeChannel !== ch) return;
 
-      let boards = Array.isArray(json.boards) ? json.boards : [];
-      if (boards.length === 0) {
-        const createRes = await fetch('/api/boards', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            channel: ch,
-            id: 'quadro-principal',
-            title: 'Quadro Principal',
-            preferredMode: 'excalidraw',
-            elements: [],
-            appState: { viewBackgroundColor: '#ffffff', theme: 'dark', gridSize: 20 },
-            files: {},
-          }),
-        });
-        const created = await createRes.json();
-        if (createRes.ok) {
-          boards = created.boards || [created.board];
-        }
+      const boards = Array.isArray(json.boards) ? json.boards : [];
+      state.boardsList = boards;
+      state.wbListFetchedChannel = ch;
+      if (state.data?.channels?.[ch]) {
+        state.data.channels[ch].boards = boards;
       }
 
-      state.boardsList = boards;
-      const targetId =
-        state.activeBoardId && boards.some((b) => b.id === state.activeBoardId)
-          ? state.activeBoardId
-          : boards[0]?.id || null;
-
-      if (targetId) {
-        await loadBoardIntoSession(targetId);
+      if (state.activeBoardId) {
+        await loadBoardIntoSession(state.activeBoardId);
       } else {
         syncWhiteboardTopbarUI();
       }
@@ -4656,12 +5049,13 @@
     renderTabstrip();
   }
 
-  function openWbBoardModal(mode = 'create') {
+  function openWbBoardModal(mode = 'create', targetBoardId = null) {
     if (!state.serverMode) {
       showToast('Gerenciar quadros requer o servidor local rodando.');
       return;
     }
     wbBoardModalMode = mode;
+    wbBoardModalTargetId = mode === 'rename' ? (targetBoardId || state.activeBoardId) : null;
     const modal = document.getElementById('wbBoardModal');
     const titleEl = document.getElementById('wbBoardModalTitle');
     const nameInp = document.getElementById('wbBoardTitleInput');
@@ -4672,7 +5066,8 @@
     const submitBtn = document.getElementById('wbBoardSubmitBtn');
 
     if (mode === 'rename') {
-      const cur = state.boardsList.find((b) => b.id === state.activeBoardId);
+      const list = state.boardsList.length ? state.boardsList : (getActiveChannelData().boards || []);
+      const cur = list.find((b) => b.id === wbBoardModalTargetId);
       if (!cur) return;
       titleEl.textContent = 'Renomear Quadro';
       nameInp.value = cur.title || cur.id;
@@ -4695,11 +5090,14 @@
     setTimeout(() => nameInp?.focus(), 30);
   }
 
-  function openWbDeleteConfirmModal() {
-    if (!state.serverMode || !state.activeBoardId) return;
-    const cur = state.boardsList.find((b) => b.id === state.activeBoardId);
+  function openWbDeleteConfirmModal(targetBoardId = null) {
+    const targetId = targetBoardId || state.activeBoardId;
+    if (!state.serverMode || !targetId) return;
+    state.wbDeleteTargetId = targetId;
+    const list = state.boardsList.length ? state.boardsList : (getActiveChannelData().boards || []);
+    const cur = list.find((b) => b.id === targetId);
     const nameSpan = document.getElementById('wbDeleteConfirmName');
-    if (nameSpan) nameSpan.textContent = cur ? `${cur.title} (${cur.id})` : state.activeBoardId;
+    if (nameSpan) nameSpan.textContent = cur ? `${cur.title} (${cur.id})` : targetId;
     document.getElementById('wbDeleteConfirmModal')?.classList.remove('hidden');
   }
 
@@ -4758,7 +5156,7 @@
     });
   }
 
-  function sendDocToWhiteboard(doc) {
+  async function sendDocToWhiteboard(doc) {
     if (!doc) return;
     const payloadDoc = {
       id: doc.meta.id,
@@ -4770,13 +5168,40 @@
       words: doc.stats?.words || 0,
       duracao_estimada: doc.meta.duracao_estimada || '',
     };
-    if (state.view === 'whiteboard' && state.boardReady) {
+    if (state.view === 'whiteboard' && state.activeBoardId && state.boardReady) {
       postToExcalidrawFrame({ type: 'wb:insert-script-node', doc: payloadDoc });
       showToast(`Roteiro "${doc.meta.titulo}" inserido no quadro!`);
       return;
     }
     state.pendingInsertDoc = payloadDoc;
-    setView('whiteboard');
+    const list = state.boardsList.length ? state.boardsList : (getActiveChannelData().boards || []);
+    let targetBoardId = state.activeBoardId || list[0]?.id || null;
+    if (!targetBoardId && state.serverMode) {
+      try {
+        const res = await fetch('/api/boards', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            channel: state.activeChannel,
+            id: 'quadro-principal',
+            title: 'Quadro Principal',
+            preferredMode: 'nodes',
+            elements: [],
+            appState: { viewBackgroundColor: '#ffffff', theme: 'dark', gridSize: 20 },
+            files: {},
+          }),
+        });
+        const created = await res.json();
+        if (res.ok && created.board?.id) {
+          state.boardsList = created.boards || [created.board];
+          state.wbListFetchedChannel = state.activeChannel;
+          targetBoardId = created.board.id;
+        }
+      } catch {
+        // segue para lista caso falhe
+      }
+    }
+    setView('whiteboard', null, { boardId: targetBoardId });
   }
 
   async function importExcalidrawFile(file) {
@@ -4800,9 +5225,14 @@
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Erro ao importar arquivo .excalidraw');
       state.boardsList = json.boards || [];
+      state.wbListFetchedChannel = state.activeChannel;
       if (json.state) state.data = normalizePayload(json.state);
-      await loadBoardIntoSession(json.board.id);
       showToast(`Quadro "${json.board.title}" importado!`);
+      if (state.view === 'whiteboard' && state.activeBoardId && document.getElementById('excalidrawFrame')) {
+        await loadBoardIntoSession(json.board.id);
+      } else {
+        openBoardEditor(json.board.id);
+      }
     } catch (err) {
       showToast(`Falha na importação: ${err.message}`);
     }
@@ -4862,6 +5292,257 @@
     }
   }
 
+  function getVisibleBoardsForList() {
+    const ch = state.activeChannel;
+    const allBoards = state.wbListFetchedChannel === ch
+      ? state.boardsList
+      : (getActiveChannelData().boards || state.boardsList || []);
+    const q = (state.wbListSearch || '').trim().toLowerCase();
+    const modeFilter = state.wbListModeFilter || 'all';
+    const filtered = allBoards.filter((b) => {
+      const mode = b.preferredMode === 'nodes' ? 'nodes' : 'excalidraw';
+      if (modeFilter !== 'all' && mode !== modeFilter) return false;
+      if (!q) return true;
+      const modeLabel = mode === 'nodes' ? 'foco em nodes' : 'excalidraw';
+      return `${b.title || ''} ${b.id || ''} ${modeLabel}`.toLowerCase().includes(q);
+    });
+    return { allBoards, filtered, ch };
+  }
+
+  function renderWhiteboardListCardsHtml(allBoards, filtered, ch) {
+    const layout = state.prefs?.wbLayout === 'list' ? 'list' : 'grid';
+    if (allBoards.length === 0) {
+      return `
+        <div class="glass-card wb-empty-state">
+          <div class="wb-empty-icon">◈</div>
+          <h3 style="margin:0; font-size:17px;">Nenhum quadro criado neste workspace</h3>
+          <p style="margin:0; max-width:520px; color:var(--text-2); font-size:13px;">
+            Crie um quadro visual Excalidraw (salvo automaticamente em <code>quadros/*.excalidraw</code>), importe um arquivo existente ou exporte o fluxograma dos roteiros.
+          </p>
+          <div class="wb-empty-actions">
+            <button type="button" class="btn-sm btn-accent" id="wbEmptyCreateBtn">+ Criar Primeiro Quadro</button>
+            <button type="button" class="btn-sm" id="wbEmptyImportBtn">⤒ Importar .excalidraw</button>
+            <button type="button" class="btn-sm" id="wbEmptyMapBtn">Ver Fluxograma do Mapa</button>
+          </div>
+        </div>
+      `;
+    }
+    if (filtered.length === 0) {
+      return `
+        <div class="glass-card wb-empty-state" style="padding:28px 20px;">
+          <h3 style="margin:0; font-size:15px;">Nenhum quadro encontrado para esse filtro</h3>
+          <p style="margin:0; color:var(--text-3); font-size:12.5px;">Tente outro termo de busca ou altere o filtro de modo.</p>
+          <div class="wb-empty-actions">
+            <button type="button" class="btn-sm" id="wbClearFiltersBtn">Limpar Filtros</button>
+          </div>
+        </div>
+      `;
+    }
+
+    const wrapClass = layout === 'list' ? 'wb-boards-list' : 'wb-boards-grid';
+    const cardExtraClass = layout === 'list' ? ' is-list-row' : '';
+    const cardsHtml = filtered
+      .map((b) => {
+        const isNodes = b.preferredMode === 'nodes';
+        const modeBadge = isNodes
+          ? '<span class="wb-mode-badge is-nodes">◈ Foco em Nodes</span>'
+          : '<span class="wb-mode-badge is-excalidraw">✎ Excalidraw</span>';
+        const elCount = Number(b.elementCount || 0);
+        const updatedLabel = formatDateTimePt(b.updatedAt);
+        const ctxUrl = `/${ch}/quadro/${b.id}`;
+        return `
+          <article class="wb-board-card${cardExtraClass}" data-open-board="${MD.escapeHtml(b.id)}" data-context-url="${MD.escapeHtml(ctxUrl)}" tabindex="0" role="button" aria-label="Abrir quadro ${MD.escapeHtml(b.title || b.id)}">
+            <div class="wb-board-card-main">
+              <div class="wb-board-card-top">
+                <h3 class="wb-board-title">${MD.escapeHtml(b.title || b.id)}</h3>
+                ${modeBadge}
+              </div>
+              <div class="wb-board-slug-row">
+                <span class="wb-board-file">${MD.escapeHtml(b.id)}.excalidraw</span>
+              </div>
+              <div class="wb-board-meta">
+                <span>◆ ${formatNumber(elCount)} elemento${elCount === 1 ? '' : 's'}</span>
+                <span>•</span>
+                <span>Atualizado ${MD.escapeHtml(updatedLabel)}</span>
+              </div>
+            </div>
+            <div class="wb-board-actions">
+              <button type="button" class="btn-sm btn-accent" data-wb-open="${MD.escapeHtml(b.id)}">Abrir Editor</button>
+              <button type="button" class="btn-sm" data-wb-rename="${MD.escapeHtml(b.id)}">Renomear</button>
+              <button type="button" class="btn-sm btn-danger" data-wb-delete="${MD.escapeHtml(b.id)}">Excluir</button>
+            </div>
+          </article>
+        `;
+      })
+      .join('');
+    return `<div class="${wrapClass}">${cardsHtml}</div>`;
+  }
+
+  function bindWhiteboardListCardEvents(rootEl) {
+    if (!rootEl) return;
+    rootEl.querySelectorAll('.wb-board-card[data-open-board]').forEach((card) => {
+      card.onclick = (e) => {
+        if (e.ctrlKey || e.metaKey || e.target.closest('button, a, input')) return;
+        openBoardEditor(card.dataset.openBoard);
+      };
+      card.onkeydown = (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          if (e.target !== card) return;
+          e.preventDefault();
+          openBoardEditor(card.dataset.openBoard);
+        }
+      };
+    });
+    rootEl.querySelectorAll('[data-wb-open]').forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        openBoardEditor(btn.dataset.wbOpen);
+      };
+    });
+    rootEl.querySelectorAll('[data-wb-rename]').forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        openWbBoardModal('rename', btn.dataset.wbRename);
+      };
+    });
+    rootEl.querySelectorAll('[data-wb-delete]').forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        openWbDeleteConfirmModal(btn.dataset.wbDelete);
+      };
+    });
+    document.getElementById('wbEmptyCreateBtn')?.addEventListener('click', () => openWbBoardModal('create'));
+    document.getElementById('wbEmptyImportBtn')?.addEventListener('click', () => {
+      document.getElementById('wbListImportInput')?.click();
+    });
+    document.getElementById('wbEmptyMapBtn')?.addEventListener('click', () => {
+      state.mapStyle = 'flowchart';
+      setView('map');
+    });
+    document.getElementById('wbClearFiltersBtn')?.addEventListener('click', () => {
+      state.wbListSearch = '';
+      state.wbListModeFilter = 'all';
+      renderWhiteboardListView(document.getElementById('viewContainer'));
+    });
+  }
+
+  function updateWhiteboardListBodyOnly() {
+    const bodyEl = document.getElementById('wbBoardsContainer');
+    const kpiEl = document.getElementById('wbListKpis');
+    if (!bodyEl) return;
+    const { allBoards, filtered, ch } = getVisibleBoardsForList();
+    const totalElements = allBoards.reduce((acc, b) => acc + Number(b.elementCount || 0), 0);
+    if (kpiEl) {
+      kpiEl.innerHTML = `
+        <span class="wb-kpi-pill"><strong>${formatNumber(allBoards.length)}</strong> quadro${allBoards.length === 1 ? '' : 's'}</span>
+        <span class="wb-kpi-pill"><strong>${formatNumber(totalElements)}</strong> elemento${totalElements === 1 ? '' : 's'}</span>
+        <span class="wb-kpi-pill">Pasta <code>quadros/</code></span>
+      `;
+    }
+    bodyEl.innerHTML = renderWhiteboardListCardsHtml(allBoards, filtered, ch);
+    bindWhiteboardListCardEvents(bodyEl);
+  }
+
+  function renderWhiteboardListView(container) {
+    if (!container) return;
+    const { allBoards, filtered, ch } = getVisibleBoardsForList();
+    const chData = getActiveChannelData();
+    const chName = chData.channel?.name || ch;
+    const totalElements = allBoards.reduce((acc, b) => acc + Number(b.elementCount || 0), 0);
+    const layout = state.prefs?.wbLayout === 'list' ? 'list' : 'grid';
+
+    container.innerHTML = `
+      <section class="wb-list-page">
+        <div class="glass-card wb-list-header">
+          <div class="wb-list-head-top">
+            <div>
+              <h2 style="margin:0; font-size:20px;">Lista de Quadros • ${MD.escapeHtml(chName)}</h2>
+              <p style="margin:4px 0 0; font-size:12.5px; color:var(--text-2);">
+                Escolha um quadro salvo para abrir o editor Excalidraw ou Foco em Nodes, ou crie um novo canvas visual para roteiros e fluxos.
+              </p>
+            </div>
+            <div class="wb-list-kpis" id="wbListKpis">
+              <span class="wb-kpi-pill"><strong>${formatNumber(allBoards.length)}</strong> quadro${allBoards.length === 1 ? '' : 's'}</span>
+              <span class="wb-kpi-pill"><strong>${formatNumber(totalElements)}</strong> elemento${totalElements === 1 ? '' : 's'}</span>
+              <span class="wb-kpi-pill">Pasta <code>quadros/</code></span>
+            </div>
+          </div>
+
+          <div class="wb-list-toolbar">
+            <div class="wb-list-filters">
+              <input type="search" class="search-box-sm wb-list-search" id="wbListSearch" placeholder="Buscar quadro por título ou id..." value="${MD.escapeHtml(state.wbListSearch || '')}">
+              <div class="mode-switch" id="wbListModeFilter" aria-label="Filtrar modo do quadro">
+                <button type="button" data-wb-mode="all" class="${state.wbListModeFilter === 'all' ? 'active' : ''}">Todos</button>
+                <button type="button" data-wb-mode="excalidraw" class="${state.wbListModeFilter === 'excalidraw' ? 'active' : ''}">Excalidraw</button>
+                <button type="button" data-wb-mode="nodes" class="${state.wbListModeFilter === 'nodes' ? 'active' : ''}">Foco em Nodes</button>
+              </div>
+              <div class="mode-switch" id="wbLayoutSwitch" aria-label="Alternar visualização Lista ou Grade">
+                <button type="button" data-wb-layout="list" class="${layout === 'list' ? 'active' : ''}">☰ Lista</button>
+                <button type="button" data-wb-layout="grid" class="${layout === 'grid' ? 'active' : ''}">▦ Grade</button>
+              </div>
+            </div>
+
+            <div class="wb-list-actions">
+              <button type="button" class="btn-sm btn-accent" id="wbListNewBtn">+ Novo Quadro</button>
+              <button type="button" class="btn-sm" id="wbListImportBtn">⤒ Importar .excalidraw</button>
+              <input type="file" id="wbListImportInput" accept=".excalidraw,.json" class="hidden">
+            </div>
+          </div>
+        </div>
+
+        <div id="wbBoardsContainer">
+          ${renderWhiteboardListCardsHtml(allBoards, filtered, ch)}
+        </div>
+      </section>
+    `;
+
+    const searchInp = document.getElementById('wbListSearch');
+    if (searchInp) {
+      searchInp.oninput = () => {
+        state.wbListSearch = searchInp.value;
+        updateWhiteboardListBodyOnly();
+      };
+    }
+
+    container.querySelectorAll('#wbListModeFilter [data-wb-mode]').forEach((btn) => {
+      btn.onclick = () => {
+        state.wbListModeFilter = btn.dataset.wbMode || 'all';
+        container.querySelectorAll('#wbListModeFilter [data-wb-mode]').forEach((b) => b.classList.toggle('active', b === btn));
+        updateWhiteboardListBodyOnly();
+      };
+    });
+
+    container.querySelectorAll('#wbLayoutSwitch [data-wb-layout]').forEach((btn) => {
+      btn.onclick = () => {
+        const next = btn.dataset.wbLayout === 'list' ? 'list' : 'grid';
+        state.prefs = { ...(state.prefs || {}), wbLayout: next };
+        const saved = loadJsonStorage(STORAGE_KEY_PREFS, {});
+        saved.wbLayout = next;
+        saveJsonStorage(STORAGE_KEY_PREFS, saved);
+        container.querySelectorAll('#wbLayoutSwitch [data-wb-layout]').forEach((b) => b.classList.toggle('active', b === btn));
+        updateWhiteboardListBodyOnly();
+      };
+    });
+
+    document.getElementById('wbListNewBtn')?.addEventListener('click', () => openWbBoardModal('create'));
+    const listImportBtn = document.getElementById('wbListImportBtn');
+    const listImportInp = document.getElementById('wbListImportInput');
+    if (listImportBtn && listImportInp) {
+      listImportBtn.onclick = () => listImportInp.click();
+      listImportInp.onchange = () => {
+        const file = listImportInp.files?.[0];
+        if (file) importExcalidrawFile(file);
+        listImportInp.value = '';
+      };
+    }
+
+    bindWhiteboardListCardEvents(document.getElementById('wbBoardsContainer'));
+
+    if (state.serverMode && state.wbListFetchedChannel !== ch) {
+      fetchBoardsListForChannel(ch);
+    }
+  }
+
   function renderWhiteboardView(container) {
     if (!state.serverMode) {
       container.innerHTML = `
@@ -4879,17 +5560,19 @@
       return;
     }
 
+    if (!state.activeBoardId) {
+      renderWhiteboardListView(container);
+      return;
+    }
+
     const existingFrame = document.getElementById('excalidrawFrame');
     if (existingFrame && container.contains(existingFrame)) {
       syncWhiteboardTopbarUI();
       if (
-        state.activeBoardId &&
-        (existingFrame.dataset.loadedBoardId !== state.activeBoardId ||
-          existingFrame.dataset.loadedChannel !== state.activeChannel)
+        existingFrame.dataset.loadedBoardId !== state.activeBoardId ||
+        existingFrame.dataset.loadedChannel !== state.activeChannel
       ) {
         loadBoardIntoSession(state.activeBoardId);
-      } else if (!state.activeBoardId || existingFrame.dataset.loadedChannel !== state.activeChannel) {
-        initWhiteboardSession();
       }
       return;
     }
@@ -4901,6 +5584,7 @@
       <div class="wb-shell${state.boardFullscreen ? ' is-wb-fullscreen' : ''}" id="wbShell">
         <div class="wb-topbar">
           <div class="wb-group">
+            <button type="button" class="btn-sm wb-back-btn" id="wbBackToListBtn" title="Voltar para a Lista de Quadros">← Quadros</button>
             <select class="select-dark wb-select" id="wbBoardSelect" title="Selecionar quadro"></select>
             <button type="button" class="btn-sm" id="wbNewBtn">+ Novo</button>
             <button type="button" class="btn-sm" id="wbRenameBtn">Renomear</button>
@@ -4928,6 +5612,8 @@
       </div>
     `;
 
+    document.getElementById('wbBackToListBtn')?.addEventListener('click', () => backToWhiteboardList());
+
     const sel = document.getElementById('wbBoardSelect');
     if (sel) {
       sel.onchange = async () => {
@@ -4941,8 +5627,8 @@
     }
 
     document.getElementById('wbNewBtn')?.addEventListener('click', () => openWbBoardModal('create'));
-    document.getElementById('wbRenameBtn')?.addEventListener('click', () => openWbBoardModal('rename'));
-    document.getElementById('wbDeleteBtn')?.addEventListener('click', () => openWbDeleteConfirmModal());
+    document.getElementById('wbRenameBtn')?.addEventListener('click', () => openWbBoardModal('rename', state.activeBoardId));
+    document.getElementById('wbDeleteBtn')?.addEventListener('click', () => openWbDeleteConfirmModal(state.activeBoardId));
 
     const importBtn = document.getElementById('wbImportBtn');
     const importInput = document.getElementById('wbImportInput');
@@ -6397,93 +7083,700 @@
   }
 
   /* =========================================================
-     VIEW 5: CATÁLOGO YOUTUBE
+     VIEW 5: CATÁLOGO YOUTUBE + CURADORIA & PLAYLISTS (v4)
   ========================================================= */
+  const CURADORIA_STATUSES = [
+    { id: 'pendente', label: 'Pendente' },
+    { id: 'assistido', label: 'Assistido' },
+    { id: 'reagir', label: 'Para Reagir' },
+    { id: 'roteirizado', label: 'Roteirizado' },
+    { id: 'arquivado', label: 'Arquivado' },
+  ];
+
+  const DEFAULT_CURADORIA_FALLBACK = {
+    categories: [
+      { id: 'reagir', name: 'Reagir', color: '#f43f5e', icon: '🎬', builtIn: true },
+      { id: 'inspiracao', name: 'Inspiração', color: '#8b5cf6', icon: '✨', builtIn: true },
+      { id: 'referencia', name: 'Referência Técnica', color: '#06b6d4', icon: '⚙️', builtIn: true },
+      { id: 'estudo', name: 'Estudo', color: '#f59e0b', icon: '📚', builtIn: true },
+      { id: 'thumb-hook', name: 'Thumb & Hook', color: '#22c55e', icon: '🎯', builtIn: true },
+    ],
+    playlists: [],
+    videoMeta: {},
+  };
+
+  function getActiveCuradoria(chData) {
+    if (state.catalogCuradoria && state.catalogCuradoriaChannel === chData.key) {
+      return state.catalogCuradoria;
+    }
+    return chData.curadoria || DEFAULT_CURADORIA_FALLBACK;
+  }
+
+  async function ensureCatalogCuradoria(channelKey, { force = false } = {}) {
+    if (!state.serverMode) return null;
+    if (!force && state.catalogCuradoria && state.catalogCuradoriaChannel === channelKey) {
+      return state.catalogCuradoria;
+    }
+    try {
+      const res = await fetch(`/api/curadoria?channel=${encodeURIComponent(channelKey)}`, { cache: 'no-store' });
+      const json = await res.json();
+      if (res.ok && json.curadoria) {
+        state.catalogCuradoria = json.curadoria;
+        state.catalogCuradoriaChannel = channelKey;
+        if (state.view === 'catalog' && state.activeChannel === channelKey) {
+          renderCatalogView(document.getElementById('viewContainer'));
+        }
+      }
+      return state.catalogCuradoria;
+    } catch {
+      return null;
+    }
+  }
+
+  function applyCuradoriaMutationResponse(json, channelKey) {
+    if (json?.curadoria) {
+      state.catalogCuradoria = json.curadoria;
+      state.catalogCuradoriaChannel = channelKey;
+    }
+    if (json?.state) {
+      state.data = normalizePayload(json.state);
+    }
+  }
+
+  function openPickPlaylistModal(videoObj) {
+    if (!state.serverMode) {
+      showToast('Adicionar à playlist requer o servidor local ativo.');
+      return;
+    }
+    const chData = getActiveChannelData();
+    const curadoria = getActiveCuradoria(chData);
+    const playlists = curadoria.playlists || [];
+    const modal = document.getElementById('catalogPlaylistPickModal');
+    const body = document.getElementById('catalogPlaylistPickBody');
+    if (!modal || !body) return;
+
+    const vidId = videoObj.videoId || videoObj.id;
+    body.innerHTML = `
+      <div style="font-size:12.5px; color:var(--text-2);">
+        Vídeo: <strong style="color:var(--text-1);">${MD.escapeHtml(videoObj.title || vidId)}</strong>
+      </div>
+      ${playlists.length
+        ? `<div class="wb-script-picker-list">
+            ${playlists
+              .map(
+                (pl) => `
+                  <button type="button" class="wb-script-picker-item" data-pick-pl="${MD.escapeHtml(pl.id)}">
+                    <span>
+                      <strong style="color:var(--text-1);">${MD.escapeHtml(pl.title)}</strong>
+                      <small style="display:block; color:var(--text-3);">${MD.escapeHtml(pl.kind || 'custom')} • ${(pl.items || []).length} vídeos</small>
+                    </span>
+                    <span class="btn-sm btn-accent">+ Adicionar</span>
+                  </button>
+                `
+              )
+              .join('')}
+          </div>`
+        : `<p style="margin:0; font-size:12.5px; color:var(--text-3);">Nenhuma playlist criada ainda. Crie uma rapidamente abaixo:</p>`}
+      <form id="quickCreatePlInModalForm" style="display:flex; gap:8px; flex-wrap:wrap; padding-top:6px; border-top:1px solid var(--border-soft);">
+        <input type="text" id="quickPlTitleInp" placeholder="Nova playlist (ex.: Reagir Agora)" required style="flex:1; min-width:160px;">
+        <button type="submit" class="btn-sm btn-accent">Criar & Adicionar</button>
+      </form>
+    `;
+
+    modal.classList.remove('hidden');
+
+    body.querySelectorAll('[data-pick-pl]').forEach((btn) => {
+      btn.onclick = async () => {
+        try {
+          const res = await fetch('/api/curadoria/playlists/item', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              channel: chData.key,
+              playlistId: btn.dataset.pickPl,
+              item: {
+                videoId: vidId,
+                id: vidId,
+                title: videoObj.title,
+                url: videoObj.url,
+                thumbnail: videoObj.thumbnail,
+                duration: videoObj.duration || '',
+                views: videoObj.views || 0,
+                viewsText: videoObj.viewsText || '',
+                isShort: videoObj.isShort !== undefined ? Boolean(videoObj.isShort) : videoObj.type === 'short',
+              },
+            }),
+          });
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || 'Erro ao adicionar na playlist');
+          applyCuradoriaMutationResponse(json, chData.key);
+          modal.classList.add('hidden');
+          showToast(`Adicionado à playlist "${json.playlist?.title || ''}"!`);
+          if (state.view === 'catalog') renderCatalogView(document.getElementById('viewContainer'));
+        } catch (err) {
+          showToast(err.message);
+        }
+      };
+    });
+
+    const quickForm = document.getElementById('quickCreatePlInModalForm');
+    if (quickForm) {
+      quickForm.onsubmit = async (e) => {
+        e.preventDefault();
+        const title = document.getElementById('quickPlTitleInp')?.value.trim();
+        if (!title) return;
+        try {
+          const res = await fetch('/api/curadoria/playlists', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              channel: chData.key,
+              mode: 'manual',
+              title,
+              kind: 'reagir',
+              items: [
+                {
+                  videoId: vidId,
+                  id: vidId,
+                  title: videoObj.title,
+                  url: videoObj.url,
+                  thumbnail: videoObj.thumbnail,
+                  duration: videoObj.duration || '',
+                  views: videoObj.views || 0,
+                  isShort: videoObj.isShort !== undefined ? Boolean(videoObj.isShort) : videoObj.type === 'short',
+                },
+              ],
+            }),
+          });
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || 'Erro ao criar playlist');
+          applyCuradoriaMutationResponse(json, chData.key);
+          modal.classList.add('hidden');
+          showToast(`Playlist "${title}" criada com o vídeo!`);
+          if (state.view === 'catalog') renderCatalogView(document.getElementById('viewContainer'));
+        } catch (err) {
+          showToast(err.message);
+        }
+      };
+    }
+  }
+
   function renderCatalogView(container) {
+    if (!container) return;
     const chData = getActiveChannelData();
     const channel = chData.channel || {};
     const rawVideos = chData.videos || [];
+    const curadoria = getActiveCuradoria(chData);
+    const categories = curadoria.categories || DEFAULT_CURADORIA_FALLBACK.categories;
+    const playlists = curadoria.playlists || [];
+    const videoMetaMap = curadoria.videoMeta || {};
+
+    if (state.serverMode && state.catalogCuradoriaChannel !== chData.key && !state.catalogLoading) {
+      state.catalogLoading = true;
+      ensureCatalogCuradoria(chData.key, { force: true }).finally(() => {
+        state.catalogLoading = false;
+      });
+    }
+
+    const isVideoShort = (v) => (v.isShort !== undefined ? Boolean(v.isShort) : v.type === 'short');
+    const longsCount = rawVideos.filter((v) => !isVideoShort(v)).length;
+    const shortsCount = rawVideos.filter((v) => isVideoShort(v)).length;
+    const totalVideosCount = Math.max(rawVideos.length, Number(channel.totalVideos || 0));
+    const totalViewsCount = rawVideos.reduce((acc, v) => acc + Number(v.views || 0), 0) || Number(channel.totalViews || 0);
+    const layoutMode = state.prefs?.catalogLayout === 'grid' ? 'grid' : 'stacked';
+
+    const catMap = new Map(categories.map((c) => [c.id, c]));
+    const statusMap = new Map(CURADORIA_STATUSES.map((s) => [s.id, s.label]));
+
+    const upsertMetaRemote = async (videoId, patch, { rerender = false } = {}) => {
+      if (!state.serverMode) {
+        showToast('Anotações e curadoria exigem o servidor local ativo.');
+        return;
+      }
+      try {
+        const res = await fetch('/api/curadoria/video', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ channel: chData.key, videoId, ...patch }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'Erro ao salvar curadoria');
+        applyCuradoriaMutationResponse(json, chData.key);
+        if (rerender && state.view === 'catalog') {
+          renderCatalogView(container);
+        } else {
+          showToast('Curadoria salva!');
+        }
+      } catch (err) {
+        showToast(err.message);
+      }
+    };
+
+    const triggerCreateCuradoriaScript = async (videoItem, metaNotes = '', playlistId = null) => {
+      if (!state.serverMode) {
+        showToast('Criar roteiro pela curadoria requer o servidor local ativo.');
+        return;
+      }
+      const vidId = videoItem.videoId || videoItem.id;
+      try {
+        const res = await fetch('/api/curadoria/create-script', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            channel: chData.key,
+            videoId: vidId,
+            title: videoItem.title || '',
+            url: videoItem.url || '',
+            channelName: videoItem.channelName || channel.name || '',
+            notes: metaNotes || '',
+            serie: 'Reavaliar',
+          }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'Erro ao criar roteiro');
+        if (playlistId && vidId) {
+          await fetch('/api/curadoria/playlists/item', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              channel: chData.key,
+              playlistId,
+              videoId: vidId,
+              linkedDocPath: json.docPath,
+              status: 'roteirizado',
+            }),
+          }).catch(() => {});
+        }
+        if (json.state) state.data = normalizePayload(json.state);
+        state.catalogCuradoriaChannel = '';
+        showToast(`Roteiro criado: ${json.docPath}`);
+        setView('scripts', json.docPath);
+      } catch (err) {
+        showToast(err.message);
+      }
+    };
+
     let videos = [...rawVideos];
-    if (state.catalogFilter === 'long') videos = videos.filter((v) => v.type === 'long');
-    if (state.catalogFilter === 'short') videos = videos.filter((v) => v.type === 'short');
+    if (state.catalogFilter === 'long') videos = videos.filter((v) => !isVideoShort(v));
+    if (state.catalogFilter === 'short') videos = videos.filter((v) => isVideoShort(v));
+    if (state.catalogSearch) {
+      const q = state.catalogSearch.toLowerCase();
+      videos = videos.filter((v) => {
+        const vid = v.videoId || v.id;
+        const vm = videoMetaMap[vid] || {};
+        return `${v.title} ${v.serie || ''} ${vm.notes || ''}`.toLowerCase().includes(q);
+      });
+    }
+    if (state.catalogCategoryFilter !== 'all') {
+      videos = videos.filter((v) => {
+        const vid = v.videoId || v.id;
+        const vm = videoMetaMap[vid] || {};
+        if (state.catalogCategoryFilter === '__none__') return !vm.category;
+        return vm.category === state.catalogCategoryFilter;
+      });
+    }
+    if (state.catalogStatusFilter !== 'all') {
+      videos = videos.filter((v) => {
+        const vid = v.videoId || v.id;
+        const vm = videoMetaMap[vid] || {};
+        return (vm.status || 'pendente') === state.catalogStatusFilter;
+      });
+    }
 
     if (state.catalogSort === 'views') {
       videos.sort((a, b) => Number(b.views || 0) - Number(a.views || 0));
+    } else if (state.catalogSort === 'starred') {
+      videos.sort((a, b) => {
+        const sa = videoMetaMap[a.videoId || a.id]?.starred ? 1 : 0;
+        const sb = videoMetaMap[b.videoId || b.id]?.starred ? 1 : 0;
+        if (sb !== sa) return sb - sa;
+        return String(b.published || '').localeCompare(String(a.published || ''));
+      });
     } else {
       videos.sort((a, b) => String(b.published || '').localeCompare(String(a.published || '')));
     }
 
-    const totalPublic = Number(channel.totalVideos || rawVideos.length || 0);
-    const totalSubtitle =
-      totalPublic > rawVideos.length
-        ? `${rawVideos.length} vídeos recentes no feed RSS (${formatNumber(totalPublic)} vídeos públicos no canal • ${formatNumber(channel.subscribers || 0)} inscritos)`
-        : `${rawVideos.length} vídeos publicados • ${formatNumber(channel.subscribers || 0)} inscritos`;
+    const renderVideoItemHtml = (v) => {
+      const vidId = v.videoId || v.id;
+      const isShort = isVideoShort(v);
+      const vm = videoMetaMap[vidId] || {};
+      const dateStr = v.published ? formatDatePt(v.published) : (v.publishedText || '—');
+      const viewsStr = v.views ? `${formatNumber(v.views)} views` : (v.viewsText || '0 views');
+      const curCat = vm.category || '';
+      const curStatus = vm.status || 'pendente';
+      const linkedDoc = vm.linkedDocPath || (chData.docs || []).find((d) => d.meta.youtube_id === vidId)?.path || '';
 
-    container.innerHTML = `
-      <div class="section-subhead">
-        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-          <div class="mode-switch" id="catalogTypeSwitch">
-            <button type="button" class="${state.catalogFilter === 'all' ? 'active' : ''}" data-cf="all">Todos (${rawVideos.length})</button>
-            <button type="button" class="${state.catalogFilter === 'long' ? 'active' : ''}" data-cf="long">Longos</button>
-            <button type="button" class="${state.catalogFilter === 'short' ? 'active' : ''}" data-cf="short">Shorts</button>
+      const catOptions = [
+        '<option value="">Sem categoria</option>',
+        ...categories.map((c) => `<option value="${MD.escapeHtml(c.id)}"${curCat === c.id ? ' selected' : ''}>${MD.escapeHtml(c.icon)} ${MD.escapeHtml(c.name)}</option>`),
+      ].join('');
+      const stOptions = CURADORIA_STATUSES.map(
+        (s) => `<option value="${s.id}"${curStatus === s.id ? ' selected' : ''}>${MD.escapeHtml(s.label)}</option>`
+      ).join('');
+
+      if (layoutMode === 'grid') {
+        return `
+          <article class="glass-card" data-ext-url="${MD.escapeHtml(v.url)}" data-ext-title="${MD.escapeHtml(v.title)}">
+            <div class="yt-thumb-wrap">
+              <img src="${MD.escapeHtml(v.thumbnail)}" alt="${MD.escapeHtml(v.title)}" loading="lazy" onerror="this.style.opacity='0.15'">
+              <span class="yt-type-chip">${isShort ? 'SHORT' : 'LONGO'}</span>
+              ${v.duration ? `<span class="cat-dur-chip">${MD.escapeHtml(v.duration)}</span>` : ''}
+              <span class="yt-views-chip">${MD.escapeHtml(viewsStr)}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-3); gap:6px;">
+              <span>${MD.escapeHtml(dateStr)}</span>
+              <span>${MD.escapeHtml(v.serie || '')}</span>
+            </div>
+            <h3 class="gc-title" style="font-size:13.5px; line-height:1.4;">${MD.escapeHtml(v.title)}</h3>
+            <div class="cat-stack-controls">
+              <select class="select-dark" data-vid-cat="${MD.escapeHtml(vidId)}" style="flex:1; min-width:110px;">${catOptions}</select>
+              <select class="select-dark" data-vid-status="${MD.escapeHtml(vidId)}" style="flex:1; min-width:100px;">${stOptions}</select>
+              <button type="button" class="cat-star-btn${vm.starred ? ' is-starred' : ''}" data-vid-star="${MD.escapeHtml(vidId)}" title="Favoritar">★</button>
+            </div>
+            <input type="text" class="cat-notes-input" data-vid-notes="${MD.escapeHtml(vidId)}" placeholder="Anotação rápida (Enter/sair salva)..." value="${MD.escapeHtml(vm.notes || '')}">
+            <div class="gc-actions">
+              <a class="btn-sm btn-accent" href="${MD.escapeHtml(v.url)}" target="_blank" rel="noopener noreferrer">Assistir ↗</a>
+              <button type="button" class="btn-sm" data-vid-add-pl="${MD.escapeHtml(vidId)}">+ Playlist</button>
+              ${linkedDoc
+                ? `<button type="button" class="btn-sm" data-open-doc="${MD.escapeHtml(linkedDoc)}">📄 Abrir Roteiro</button>`
+                : `<button type="button" class="btn-sm" data-vid-create-script="${MD.escapeHtml(vidId)}">✎ Criar Roteiro / Reavaliar</button>`}
+            </div>
+          </article>
+        `;
+      }
+
+      return `
+        <article class="cat-stack-row" data-ext-url="${MD.escapeHtml(v.url)}" data-ext-title="${MD.escapeHtml(v.title)}">
+          <div class="cat-stack-thumb">
+            <img src="${MD.escapeHtml(v.thumbnail)}" alt="${MD.escapeHtml(v.title)}" loading="lazy" onerror="this.style.opacity='0.15'">
+            <span class="yt-type-chip">${isShort ? 'SHORT' : 'LONGO'}</span>
+            ${v.duration ? `<span class="cat-dur-chip">${MD.escapeHtml(v.duration)}</span>` : ''}
           </div>
-          <select class="select-dark" id="catalogSortSel">
-            <option value="date"${state.catalogSort === 'date' ? ' selected' : ''}>Mais recentes</option>
-            <option value="views"${state.catalogSort === 'views' ? ' selected' : ''}>Mais visualizações</option>
-          </select>
-          <span style="font-size:12px; color:var(--text-3);">${MD.escapeHtml(totalSubtitle)}</span>
-        </div>
+          <div class="cat-stack-body">
+            <div class="cat-stack-head">
+              <div style="min-width:0; flex:1;">
+                <h3 class="cat-stack-title">${MD.escapeHtml(v.title)}</h3>
+                <div class="cat-stack-meta">
+                  <span>${MD.escapeHtml(dateStr)}</span>
+                  <span>•</span>
+                  <strong style="color:var(--text-2);">${MD.escapeHtml(viewsStr)}</strong>
+                  ${v.serie ? `<span>•</span><span>${MD.escapeHtml(v.serie)}</span>` : ''}
+                  ${curCat && catMap.get(curCat) ? `<span class="cat-tag-chip" style="padding:1px 8px; font-size:10.5px; border-color:${MD.escapeHtml(catMap.get(curCat).color)}66;">${MD.escapeHtml(catMap.get(curCat).icon)} ${MD.escapeHtml(catMap.get(curCat).name)}</span>` : ''}
+                </div>
+              </div>
+              <button type="button" class="cat-star-btn${vm.starred ? ' is-starred' : ''}" data-vid-star="${MD.escapeHtml(vidId)}" title="Favoritar vídeo">★</button>
+            </div>
+            <div class="cat-stack-controls">
+              <select class="select-dark" data-vid-cat="${MD.escapeHtml(vidId)}">${catOptions}</select>
+              <select class="select-dark" data-vid-status="${MD.escapeHtml(vidId)}">${stOptions}</select>
+              <input type="text" class="cat-notes-input" data-vid-notes="${MD.escapeHtml(vidId)}" placeholder="Anotação rápida sobre gancho, corte ou reação..." value="${MD.escapeHtml(vm.notes || '')}">
+            </div>
+            <div style="display:flex; align-items:center; gap:7px; flex-wrap:wrap;">
+              <a class="btn-sm btn-accent" href="${MD.escapeHtml(v.url)}" target="_blank" rel="noopener noreferrer">Assistir ↗</a>
+              <button type="button" class="btn-sm" data-vid-add-pl="${MD.escapeHtml(vidId)}">+ Playlist</button>
+              <button type="button" class="btn-sm" data-vid-create-script="${MD.escapeHtml(vidId)}">✎ Criar Roteiro / Reavaliar</button>
+              ${linkedDoc ? `<button type="button" class="btn-sm" data-open-doc="${MD.escapeHtml(linkedDoc)}">📄 Abrir Roteiro</button>` : ''}
+              <button type="button" class="btn-sm" data-postmortem-for="${MD.escapeHtml(vidId)}">Post-Mortem</button>
+            </div>
+          </div>
+        </article>
+      `;
+    };
 
-        <div style="display:flex; align-items:center; gap:8px;">
-          <button type="button" class="btn-sm" id="openCatalogDocBtn">Abrir catalogo-youtube.md</button>
-          <button type="button" class="btn-sm btn-accent" id="syncYoutubeBtn">↻ Sincronizar RSS (${MD.escapeHtml(channel.handle || chData.key)})</button>
-        </div>
-      </div>
+    let mainBodyHtml = '';
+    if (state.catalogSubTab === 'playlists') {
+      mainBodyHtml = `
+        <div class="cat-playlists-layout">
+          <div class="cat-panels-row">
+            <div class="glass-card">
+              <h3 class="gc-title">Criar Playlist de Curadoria</h3>
+              <form id="catCreatePlaylistForm" style="display:flex; flex-direction:column; gap:8px;">
+                <div class="form-row-2">
+                  <input type="text" class="search-box-sm" id="catPlTitleInp" placeholder="Nome (ex.: Reagir Tech BR)" required style="margin:0;">
+                  <select class="select-dark" id="catPlKindSel">
+                    <option value="reagir">🎬 Reagir</option>
+                    <option value="inspiracao">✨ Inspiração</option>
+                    <option value="referencia">⚙️ Referência Técnica</option>
+                    <option value="estudo">📚 Estudo</option>
+                    <option value="custom">📁 Customizada</option>
+                  </select>
+                </div>
+                <input type="text" class="search-box-sm" id="catPlDescInp" placeholder="Descrição / critério de curadoria (opcional)" style="margin:0;">
+                <div><button type="submit" class="btn-sm btn-accent">+ Criar Playlist</button></div>
+              </form>
+            </div>
 
-      <div class="cards-grid-3">
-        ${videos
+            <div class="glass-card">
+              <h3 class="gc-title">Importar Playlist do YouTube</h3>
+              <form id="catImportPlaylistForm" style="display:flex; flex-direction:column; gap:8px;">
+                <input type="text" class="search-box-sm" id="catImportPlUrlInp" placeholder="Cole URL ou ID (ex.: https://youtube.com/playlist?list=PL...)" required style="margin:0;">
+                <div class="form-row-2">
+                  <input type="text" class="search-box-sm" id="catImportPlTitleInp" placeholder="Nome personalizado (opcional)" style="margin:0;">
+                  <select class="select-dark" id="catImportPlKindSel">
+                    <option value="reagir">🎬 Reagir</option>
+                    <option value="inspiracao">✨ Inspiração</option>
+                    <option value="referencia">⚙️ Referência Técnica</option>
+                    <option value="estudo">📚 Estudo</option>
+                  </select>
+                </div>
+                <div><button type="submit" class="btn-sm btn-accent">⤓ Importar Playlist Pública</button></div>
+              </form>
+            </div>
+          </div>
+
+          <div class="glass-card">
+            <div class="gc-top">
+              <h3 class="gc-title">Categorias Customizadas (${categories.length})</h3>
+            </div>
+            <div class="cat-chip-row">
+              ${categories
+                .map(
+                  (c) => `
+                    <span class="cat-tag-chip" style="border-color:${MD.escapeHtml(c.color)}66;">
+                      <span>${MD.escapeHtml(c.icon)}</span>
+                      <span>${MD.escapeHtml(c.name)}</span>
+                      ${!c.builtIn ? `<button type="button" class="cat-tag-del" data-del-cat="${MD.escapeHtml(c.id)}" title="Remover categoria">✕</button>` : ''}
+                    </span>
+                  `
+                )
+                .join('')}
+            </div>
+            <form id="catAddCategoryForm" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:4px;">
+              <input type="text" class="search-box-sm" id="catNewCatIcon" value="🏷️" style="width:52px; margin:0; text-align:center;" title="Ícone">
+              <input type="text" class="search-box-sm" id="catNewCatName" placeholder="Nova categoria..." required style="flex:1; min-width:150px; margin:0;">
+              <input type="color" id="catNewCatColor" value="#38bdf8" style="width:36px; height:32px; border:none; background:none; padding:0;" title="Cor">
+              <button type="submit" class="btn-sm">+ Adicionar Categoria</button>
+            </form>
+          </div>
+
+          ${playlists.length
+            ? playlists
+                .map((pl) => {
+                  const items = pl.items || [];
+                  const expanded = state.catalogExpandedPlaylistId === pl.id || playlists.length === 1;
+                  return `
+                    <section class="cat-playlist-card">
+                      <div class="cat-playlist-head">
+                        <div style="min-width:0; flex:1;">
+                          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <strong style="font-size:15px;">${MD.escapeHtml(pl.title)}</strong>
+                            <span class="status-pill st-roteiro">${MD.escapeHtml(pl.kind || 'custom')}</span>
+                            <span class="kanban-count">${items.length} vídeos</span>
+                          </div>
+                          ${pl.description ? `<div style="font-size:12px; color:var(--text-3); margin-top:3px;">${MD.escapeHtml(pl.description)}</div>` : ''}
+                        </div>
+                        <div style="display:flex; align-items:center; gap:7px; flex-wrap:wrap;">
+                          ${pl.sourceUrl ? `<a class="btn-sm" href="${MD.escapeHtml(pl.sourceUrl)}" target="_blank" rel="noopener noreferrer">YouTube ↗</a>` : ''}
+                          <button type="button" class="btn-sm" data-toggle-pl="${MD.escapeHtml(pl.id)}">${expanded ? '▾ Recolher' : '▸ Expandir'}</button>
+                          <button type="button" class="btn-sm btn-danger" data-del-pl="${MD.escapeHtml(pl.id)}">Excluir</button>
+                        </div>
+                      </div>
+
+                      ${expanded
+                        ? `
+                          <form class="cat-add-pl-item-form" data-pl-add-form="${MD.escapeHtml(pl.id)}" style="display:flex; gap:8px; flex-wrap:wrap; padding-top:6px; border-top:1px solid var(--border-soft);">
+                            <input type="text" class="search-box-sm" data-pl-url-input="${MD.escapeHtml(pl.id)}" placeholder="Adicionar vídeo avulso por URL ou ID (youtube.com/watch?v=..., /shorts/...)..." required style="flex:1; min-width:220px; margin:0;">
+                            <button type="submit" class="btn-sm btn-accent">+ Adicionar Vídeo</button>
+                          </form>
+                          <div class="cat-stacked-list">
+                            ${items.length
+                              ? items
+                                  .map((it) => {
+                                    const vid = it.videoId || it.id;
+                                    const stOpts = CURADORIA_STATUSES.map(
+                                      (s) => `<option value="${s.id}"${(it.status || 'pendente') === s.id ? ' selected' : ''}>${MD.escapeHtml(s.label)}</option>`
+                                    ).join('');
+                                    const catOpts = [
+                                      '<option value="">Sem categoria</option>',
+                                      ...categories.map((c) => `<option value="${MD.escapeHtml(c.id)}"${it.category === c.id ? ' selected' : ''}>${MD.escapeHtml(c.icon)} ${MD.escapeHtml(c.name)}</option>`),
+                                    ].join('');
+                                    return `
+                                      <article class="cat-stack-row" data-ext-url="${MD.escapeHtml(it.url)}" data-ext-title="${MD.escapeHtml(it.title)}">
+                                        <div class="cat-stack-thumb">
+                                          <img src="${MD.escapeHtml(it.thumbnail)}" alt="${MD.escapeHtml(it.title)}" loading="lazy" onerror="this.style.opacity='0.15'">
+                                          <span class="yt-type-chip">${it.isShort ? 'SHORT' : 'VÍDEO'}</span>
+                                          ${it.duration ? `<span class="cat-dur-chip">${MD.escapeHtml(it.duration)}</span>` : ''}
+                                        </div>
+                                        <div class="cat-stack-body">
+                                          <div class="cat-stack-head">
+                                            <div style="min-width:0; flex:1;">
+                                              <h4 class="cat-stack-title">${MD.escapeHtml(it.title)}</h4>
+                                              <div class="cat-stack-meta">
+                                                ${it.channelName ? `<span>${MD.escapeHtml(it.channelName)}</span><span>•</span>` : ''}
+                                                <span>${it.views ? `${formatNumber(it.views)} views` : (it.viewsText || 'Link salvo')}</span>
+                                              </div>
+                                            </div>
+                                          </div>
+                                          <div class="cat-stack-controls">
+                                            <select class="select-dark" data-pl-item-cat="${MD.escapeHtml(pl.id)}::${MD.escapeHtml(vid)}">${catOpts}</select>
+                                            <select class="select-dark" data-pl-item-status="${MD.escapeHtml(pl.id)}::${MD.escapeHtml(vid)}">${stOpts}</select>
+                                            <input type="text" class="cat-notes-input" data-pl-item-notes="${MD.escapeHtml(pl.id)}::${MD.escapeHtml(vid)}" placeholder="Notas para reação / roteiro..." value="${MD.escapeHtml(it.notes || '')}">
+                                          </div>
+                                          <div style="display:flex; gap:7px; flex-wrap:wrap;">
+                                            <a class="btn-sm btn-accent" href="${MD.escapeHtml(it.url)}" target="_blank" rel="noopener noreferrer">Assistir ↗</a>
+                                            <button type="button" class="btn-sm" data-pl-create-script="${MD.escapeHtml(pl.id)}::${MD.escapeHtml(vid)}">✎ Criar Roteiro / Reavaliar</button>
+                                            ${it.linkedDocPath ? `<button type="button" class="btn-sm" data-open-doc="${MD.escapeHtml(it.linkedDocPath)}">📄 Abrir Roteiro</button>` : ''}
+                                            <button type="button" class="btn-sm btn-danger" data-pl-rem-item="${MD.escapeHtml(pl.id)}::${MD.escapeHtml(vid)}">Remover</button>
+                                          </div>
+                                        </div>
+                                      </article>
+                                    `;
+                                  })
+                                  .join('')
+                              : '<p style="margin:6px 0; font-size:12.5px; color:var(--text-3);">Playlist vazia. Cole uma URL de vídeo acima para adicionar.</p>'}
+                          </div>
+                        `
+                        : ''}
+                    </section>
+                  `;
+                })
+                .join('')
+            : '<div class="glass-card"><p style="margin:0; color:var(--text-3);">Nenhuma playlist de curadoria criada ou importada ainda.</p></div>'}
+        </div>
+      `;
+    } else {
+      const renderCollection = (list) => {
+        if (!list.length) {
+          return '<div class="glass-card"><p style="margin:0; color:var(--text-3);">Nenhum vídeo encontrado com os filtros atuais.</p></div>';
+        }
+        if (layoutMode === 'grid') {
+          return `<div class="cards-grid-3">${list.map(renderVideoItemHtml).join('')}</div>`;
+        }
+        return `<div class="cat-stacked-list">${list.map(renderVideoItemHtml).join('')}</div>`;
+      };
+
+      if (state.catalogGroupBy && state.catalogGroupBy !== 'none') {
+        const groups = new Map();
+        for (const v of videos) {
+          const vid = v.videoId || v.id;
+          const vm = videoMetaMap[vid] || {};
+          let keyLabel = 'Outros';
+          if (state.catalogGroupBy === 'category') {
+            keyLabel = vm.category ? `${catMap.get(vm.category)?.icon || '🏷️'} ${catMap.get(vm.category)?.name || vm.category}` : 'Sem Categoria';
+          } else if (state.catalogGroupBy === 'type') {
+            keyLabel = isVideoShort(v) ? 'Shorts' : 'Vídeos Longos';
+          } else if (state.catalogGroupBy === 'status') {
+            keyLabel = statusMap.get(vm.status || 'pendente') || 'Pendente';
+          } else if (state.catalogGroupBy === 'year') {
+            const yr = String(v.published || '').slice(0, 4);
+            keyLabel = /^\d{4}$/.test(yr) ? yr : 'Sem Data Exata';
+          }
+          if (!groups.has(keyLabel)) groups.set(keyLabel, []);
+          groups.get(keyLabel).push(v);
+        }
+        mainBodyHtml = Array.from(groups.entries())
           .map(
-            (v) => `
-              <article class="glass-card" data-ext-url="${MD.escapeHtml(v.url)}" data-ext-title="${MD.escapeHtml(v.title)}">
-                <div class="yt-thumb-wrap">
-                  <img src="${MD.escapeHtml(v.thumbnail)}" alt="${MD.escapeHtml(v.title)}" loading="lazy" onerror="this.style.opacity='0.15'">
-                  <span class="yt-type-chip">${v.type === 'short' ? 'SHORT' : 'LONGO'}</span>
-                  <span class="yt-views-chip">${formatNumber(v.views)} views</span>
-                </div>
-                <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-3);">
-                  <span>${formatDatePt(v.published)}</span>
-                  <span>${MD.escapeHtml(v.serie)}</span>
-                </div>
-                <h3 class="gc-title" style="font-size:13.5px; line-height:1.4;">${MD.escapeHtml(v.title)}</h3>
-                <div class="gc-actions">
-                  <a class="btn-sm btn-accent" href="${MD.escapeHtml(v.url)}" target="_blank" rel="noopener noreferrer">Assistir ↗</a>
-                  <button type="button" class="btn-sm" data-postmortem-for="${MD.escapeHtml(v.id)}">Post-Mortem</button>
-                </div>
-              </article>
+            ([label, list]) => `
+              <div class="cat-group-header">
+                <span>${MD.escapeHtml(label)}</span>
+                <span class="kanban-count">${list.length}</span>
+              </div>
+              ${renderCollection(list)}
             `
           )
-          .join('')}
+          .join('');
+      } else {
+        mainBodyHtml = renderCollection(videos);
+      }
+    }
+
+    container.innerHTML = `
+      <div class="cat-kpi-bar">
+        <div class="cat-kpi-pill">
+          <span>Total de Vídeos</span>
+          <strong>${formatNumber(totalVideosCount)}</strong>
+        </div>
+        <div class="cat-kpi-pill">
+          <span>Vídeos Longos</span>
+          <strong>${formatNumber(longsCount)}</strong>
+        </div>
+        <div class="cat-kpi-pill">
+          <span>Shorts</span>
+          <strong>${formatNumber(shortsCount)}</strong>
+        </div>
+        <div class="cat-kpi-pill">
+          <span>Views Somadas</span>
+          <strong>${formatNumber(totalViewsCount)}</strong>
+        </div>
+        <div class="cat-kpi-pill">
+          <span>Playlists Curadoria</span>
+          <strong>${formatNumber(playlists.length)}</strong>
+        </div>
       </div>
+
+      <div class="section-subhead">
+        <div class="mode-switch" id="catalogSubTabSwitch">
+          <button type="button" class="${state.catalogSubTab === 'videos' ? 'active' : ''}" data-cat-tab="videos">Vídeos do Canal (${rawVideos.length})</button>
+          <button type="button" class="${state.catalogSubTab === 'playlists' ? 'active' : ''}" data-cat-tab="playlists">Playlists & Curadoria (${playlists.length})</button>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <button type="button" class="btn-sm" id="openCatalogDocBtn">Abrir catalogo-youtube.md</button>
+          <button type="button" class="btn-sm btn-accent" id="syncYoutubeBtn">⟳ Sincronizar Canal Agora (${MD.escapeHtml(channel.handle || chData.key)})</button>
+        </div>
+      </div>
+
+      ${state.catalogSubTab === 'videos'
+        ? `
+          <div class="cat-toolbar">
+            <div class="cat-toolbar-group">
+              <div class="mode-switch" id="catalogTypeSwitch">
+                <button type="button" class="${state.catalogFilter === 'all' ? 'active' : ''}" data-cf="all">Todos (${rawVideos.length})</button>
+                <button type="button" class="${state.catalogFilter === 'long' ? 'active' : ''}" data-cf="long">Longos (${longsCount})</button>
+                <button type="button" class="${state.catalogFilter === 'short' ? 'active' : ''}" data-cf="short">Shorts (${shortsCount})</button>
+              </div>
+              <input type="search" class="search-box-sm" id="catalogSearchInput" placeholder="Buscar por título, série ou nota..." value="${MD.escapeHtml(state.catalogSearch)}" style="width:210px; margin:0; height:32px;">
+              <select class="select-dark" id="catalogCatFilterSel" title="Filtrar por Categoria">
+                <option value="all"${state.catalogCategoryFilter === 'all' ? ' selected' : ''}>Todas Categorias</option>
+                <option value="__none__"${state.catalogCategoryFilter === '__none__' ? ' selected' : ''}>Sem Categoria</option>
+                ${categories.map((c) => `<option value="${MD.escapeHtml(c.id)}"${state.catalogCategoryFilter === c.id ? ' selected' : ''}>${MD.escapeHtml(c.icon)} ${MD.escapeHtml(c.name)}</option>`).join('')}
+              </select>
+              <select class="select-dark" id="catalogStatusFilterSel" title="Filtrar por Status">
+                <option value="all"${state.catalogStatusFilter === 'all' ? ' selected' : ''}>Todos Status</option>
+                ${CURADORIA_STATUSES.map((s) => `<option value="${s.id}"${state.catalogStatusFilter === s.id ? ' selected' : ''}>${MD.escapeHtml(s.label)}</option>`).join('')}
+              </select>
+            </div>
+
+            <div class="cat-toolbar-group">
+              <select class="select-dark" id="catalogSortSel" title="Ordenação">
+                <option value="date"${state.catalogSort === 'date' ? ' selected' : ''}>Mais recentes</option>
+                <option value="views"${state.catalogSort === 'views' ? ' selected' : ''}>Mais visualizações</option>
+                <option value="starred"${state.catalogSort === 'starred' ? ' selected' : ''}>Favoritos primeiro</option>
+              </select>
+              <select class="select-dark" id="catalogGroupBySel" title="Agrupar por">
+                <option value="none"${state.catalogGroupBy === 'none' ? ' selected' : ''}>Agrupar: Nenhum</option>
+                <option value="category"${state.catalogGroupBy === 'category' ? ' selected' : ''}>Agrupar: Categoria</option>
+                <option value="type"${state.catalogGroupBy === 'type' ? ' selected' : ''}>Agrupar: Tipo (Long/Short)</option>
+                <option value="status"${state.catalogGroupBy === 'status' ? ' selected' : ''}>Agrupar: Status</option>
+                <option value="year"${state.catalogGroupBy === 'year' ? ' selected' : ''}>Agrupar: Ano</option>
+              </select>
+              <div class="mode-switch" id="catalogLayoutSwitch">
+                <button type="button" class="${layoutMode === 'stacked' ? 'active' : ''}" data-cat-layout="stacked">☰ Lista Empilhada</button>
+                <button type="button" class="${layoutMode === 'grid' ? 'active' : ''}" data-cat-layout="grid">▦ Grade</button>
+              </div>
+            </div>
+          </div>
+        `
+        : ''}
+
+      ${mainBodyHtml}
     `;
 
-    container.querySelectorAll('#catalogTypeSwitch button').forEach((btn) => {
+    container.querySelectorAll('#catalogSubTabSwitch button').forEach((btn) => {
       btn.onclick = () => {
-        state.catalogFilter = btn.dataset.cf;
+        state.catalogSubTab = btn.dataset.catTab;
         renderCatalogView(container);
       };
     });
-    document.getElementById('catalogSortSel').onchange = (e) => {
-      state.catalogSort = e.target.value;
-      renderCatalogView(container);
-    };
+
     document.getElementById('openCatalogDocBtn').onclick = () => setView('scripts', '00-canal/catalogo-youtube.md');
 
     document.getElementById('syncYoutubeBtn').onclick = async () => {
       if (!state.serverMode) {
-        showToast('Para sincronizar o RSS ao vivo, rode: npm run sync:youtube (ou inicie o servidor local).');
+        showToast('Para sincronizar o canal completo ao vivo, inicie o servidor local.');
         return;
       }
-      showToast(`Consultando RSS do YouTube (${channel.handle || chData.key})...`);
+      showToast(`Sincronizando catálogo completo de ${channel.handle || chData.key}...`);
       try {
         const res = await fetch('/api/sync-youtube', {
           method: 'POST',
@@ -6494,29 +7787,328 @@
         if (json.state) state.data = normalizePayload(json.state);
         updateHeaderChrome();
         renderCatalogView(container);
-        showToast(json.warning || `Sincronizado! ${json.updatedCount} vídeos verificados.`);
+        showToast(json.warning || `Sincronizado! ${json.updatedCount} vídeos no catálogo.`);
       } catch (err) {
         showToast(`Falha na sincronização: ${err.message}`);
       }
     };
 
-    container.querySelectorAll('[data-postmortem-for]').forEach((btn) => {
-      btn.onclick = () => {
-        const vid = rawVideos.find((x) => x.id === btn.dataset.postmortemFor);
-        const existing = (chData.docs || []).find((d) => d.meta.youtube_id === vid?.id);
-        if (existing) {
-          setView('scripts', existing.path);
-        } else if (vid) {
-          openNewDocModal({
-            type: 'post-mortem',
-            folder: '02-roteiros/publicados',
-            title: `Post-Mortem: ${vid.title}`,
-            serie: vid.serie,
-            summary: `Análise do vídeo ${vid.id} (${vid.views} views, publicado em ${vid.published}).`,
+    if (state.catalogSubTab === 'videos') {
+      container.querySelectorAll('#catalogTypeSwitch button').forEach((btn) => {
+        btn.onclick = () => {
+          state.catalogFilter = btn.dataset.cf;
+          renderCatalogView(container);
+        };
+      });
+      const searchEl = document.getElementById('catalogSearchInput');
+      if (searchEl) {
+        searchEl.oninput = () => {
+          state.catalogSearch = searchEl.value;
+          const pos = searchEl.selectionStart;
+          renderCatalogView(container);
+          const again = document.getElementById('catalogSearchInput');
+          if (again) {
+            again.focus();
+            again.setSelectionRange(pos, pos);
+          }
+        };
+      }
+      document.getElementById('catalogCatFilterSel').onchange = (e) => {
+        state.catalogCategoryFilter = e.target.value;
+        renderCatalogView(container);
+      };
+      document.getElementById('catalogStatusFilterSel').onchange = (e) => {
+        state.catalogStatusFilter = e.target.value;
+        renderCatalogView(container);
+      };
+      document.getElementById('catalogSortSel').onchange = (e) => {
+        state.catalogSort = e.target.value;
+        renderCatalogView(container);
+      };
+      document.getElementById('catalogGroupBySel').onchange = (e) => {
+        state.catalogGroupBy = e.target.value;
+        renderCatalogView(container);
+      };
+      container.querySelectorAll('#catalogLayoutSwitch button').forEach((btn) => {
+        btn.onclick = () => {
+          const next = btn.dataset.catLayout === 'grid' ? 'grid' : 'stacked';
+          state.prefs = { ...(state.prefs || {}), catalogLayout: next };
+          const saved = loadJsonStorage(STORAGE_KEY_PREFS, {});
+          saved.catalogLayout = next;
+          saveJsonStorage(STORAGE_KEY_PREFS, saved);
+          renderCatalogView(container);
+        };
+      });
+
+      container.querySelectorAll('[data-vid-cat]').forEach((sel) => {
+        sel.onchange = () => upsertMetaRemote(sel.dataset.vidCat, { category: sel.value }, { rerender: state.catalogGroupBy === 'category' });
+      });
+      container.querySelectorAll('[data-vid-status]').forEach((sel) => {
+        sel.onchange = () => upsertMetaRemote(sel.dataset.vidStatus, { status: sel.value }, { rerender: state.catalogGroupBy === 'status' });
+      });
+      container.querySelectorAll('[data-vid-star]').forEach((btn) => {
+        btn.onclick = () => {
+          const vidId = btn.dataset.vidStar;
+          const nextStar = !videoMetaMap[vidId]?.starred;
+          upsertMetaRemote(vidId, { starred: nextStar }, { rerender: true });
+        };
+      });
+      container.querySelectorAll('[data-vid-notes]').forEach((inp) => {
+        const commitNotes = () => {
+          const vidId = inp.dataset.vidNotes;
+          const prev = videoMetaMap[vidId]?.notes || '';
+          if (inp.value !== prev) {
+            upsertMetaRemote(vidId, { notes: inp.value });
+          }
+        };
+        inp.onchange = commitNotes;
+        inp.onkeydown = (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            inp.blur();
+          }
+        };
+      });
+      container.querySelectorAll('[data-vid-add-pl]').forEach((btn) => {
+        btn.onclick = () => {
+          const vidId = btn.dataset.vidAddPl;
+          const vid = rawVideos.find((x) => (x.videoId || x.id) === vidId);
+          if (vid) openPickPlaylistModal(vid);
+        };
+      });
+      container.querySelectorAll('[data-vid-create-script]').forEach((btn) => {
+        btn.onclick = () => {
+          const vidId = btn.dataset.vidCreateScript;
+          const vid = rawVideos.find((x) => (x.videoId || x.id) === vidId);
+          if (vid) triggerCreateCuradoriaScript(vid, videoMetaMap[vidId]?.notes || '');
+        };
+      });
+      container.querySelectorAll('[data-open-doc]').forEach((btn) => {
+        btn.onclick = () => setView('scripts', btn.dataset.openDoc);
+      });
+      container.querySelectorAll('[data-postmortem-for]').forEach((btn) => {
+        btn.onclick = () => {
+          const vidId = btn.dataset.postmortemFor;
+          const vid = rawVideos.find((x) => (x.videoId || x.id) === vidId);
+          const existing = (chData.docs || []).find((d) => d.meta.youtube_id === vidId);
+          if (existing) {
+            setView('scripts', existing.path);
+          } else if (vid) {
+            openNewDocModal({
+              type: 'post-mortem',
+              folder: '02-roteiros/publicados',
+              title: `Post-Mortem: ${vid.title}`,
+              serie: vid.serie,
+              summary: `Análise do vídeo ${vidId} (${vid.views} views, publicado em ${vid.published}).`,
+            });
+          }
+        };
+      });
+    } else {
+      const createPlForm = document.getElementById('catCreatePlaylistForm');
+      if (createPlForm) {
+        createPlForm.onsubmit = async (e) => {
+          e.preventDefault();
+          if (!state.serverMode) return showToast('Requer servidor local ativo.');
+          const title = document.getElementById('catPlTitleInp')?.value.trim();
+          const kind = document.getElementById('catPlKindSel')?.value || 'custom';
+          const description = document.getElementById('catPlDescInp')?.value.trim() || '';
+          try {
+            const res = await fetch('/api/curadoria/playlists', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ channel: chData.key, mode: 'manual', title, kind, description }),
+            });
+            const json = await res.json();
+            if (!res.ok) throw new Error(json.error || 'Erro ao criar playlist');
+            applyCuradoriaMutationResponse(json, chData.key);
+            state.catalogExpandedPlaylistId = json.playlist?.id || null;
+            renderCatalogView(container);
+            showToast(`Playlist "${title}" criada!`);
+          } catch (err) {
+            showToast(err.message);
+          }
+        };
+      }
+
+      const importPlForm = document.getElementById('catImportPlaylistForm');
+      if (importPlForm) {
+        importPlForm.onsubmit = async (e) => {
+          e.preventDefault();
+          if (!state.serverMode) return showToast('Requer servidor local ativo.');
+          const urlOrId = document.getElementById('catImportPlUrlInp')?.value.trim();
+          const title = document.getElementById('catImportPlTitleInp')?.value.trim() || undefined;
+          const kind = document.getElementById('catImportPlKindSel')?.value || 'reagir';
+          showToast('Importando playlist do YouTube...');
+          try {
+            const res = await fetch('/api/curadoria/playlists', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ channel: chData.key, mode: 'import', urlOrId, title, kind }),
+            });
+            const json = await res.json();
+            if (!res.ok) throw new Error(json.error || 'Erro ao importar playlist');
+            applyCuradoriaMutationResponse(json, chData.key);
+            state.catalogExpandedPlaylistId = json.playlist?.id || null;
+            renderCatalogView(container);
+            showToast(`Playlist "${json.playlist?.title || ''}" importada (${(json.playlist?.items || []).length} vídeos)!`);
+          } catch (err) {
+            showToast(err.message);
+          }
+        };
+      }
+
+      const addCatForm = document.getElementById('catAddCategoryForm');
+      if (addCatForm) {
+        addCatForm.onsubmit = async (e) => {
+          e.preventDefault();
+          if (!state.serverMode) return showToast('Requer servidor local ativo.');
+          const name = document.getElementById('catNewCatName')?.value.trim();
+          const icon = document.getElementById('catNewCatIcon')?.value.trim() || '🏷️';
+          const color = document.getElementById('catNewCatColor')?.value || '#38bdf8';
+          try {
+            const res = await fetch('/api/curadoria/categories', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ channel: chData.key, name, icon, color }),
+            });
+            const json = await res.json();
+            if (!res.ok) throw new Error(json.error || 'Erro ao criar categoria');
+            applyCuradoriaMutationResponse(json, chData.key);
+            renderCatalogView(container);
+            showToast(`Categoria "${name}" salva!`);
+          } catch (err) {
+            showToast(err.message);
+          }
+        };
+      }
+
+      container.querySelectorAll('[data-del-cat]').forEach((btn) => {
+        btn.onclick = async () => {
+          if (!state.serverMode) return;
+          try {
+            const res = await fetch(`/api/curadoria/categories?channel=${encodeURIComponent(chData.key)}&id=${encodeURIComponent(btn.dataset.delCat)}`, {
+              method: 'DELETE',
+            });
+            const json = await res.json();
+            if (!res.ok) throw new Error(json.error || 'Erro ao remover categoria');
+            applyCuradoriaMutationResponse(json, chData.key);
+            renderCatalogView(container);
+          } catch (err) {
+            showToast(err.message);
+          }
+        };
+      });
+
+      container.querySelectorAll('[data-toggle-pl]').forEach((btn) => {
+        btn.onclick = () => {
+          const plId = btn.dataset.togglePl;
+          state.catalogExpandedPlaylistId = state.catalogExpandedPlaylistId === plId ? null : plId;
+          renderCatalogView(container);
+        };
+      });
+
+      container.querySelectorAll('[data-del-pl]').forEach((btn) => {
+        btn.onclick = async () => {
+          if (!state.serverMode) return;
+          if (!confirm('Remover esta playlist de curadoria?')) return;
+          try {
+            const res = await fetch(`/api/curadoria/playlists?channel=${encodeURIComponent(chData.key)}&id=${encodeURIComponent(btn.dataset.delPl)}`, {
+              method: 'DELETE',
+            });
+            const json = await res.json();
+            if (!res.ok) throw new Error(json.error || 'Erro ao excluir playlist');
+            applyCuradoriaMutationResponse(json, chData.key);
+            renderCatalogView(container);
+            showToast('Playlist removida.');
+          } catch (err) {
+            showToast(err.message);
+          }
+        };
+      });
+
+      container.querySelectorAll('[data-pl-add-form]').forEach((form) => {
+        form.onsubmit = async (e) => {
+          e.preventDefault();
+          if (!state.serverMode) return showToast('Requer servidor local ativo.');
+          const playlistId = form.dataset.plAddForm;
+          const urlOrId = form.querySelector(`[data-pl-url-input="${playlistId}"]`)?.value.trim();
+          if (!urlOrId) return;
+          showToast('Buscando metadados do vídeo...');
+          try {
+            const res = await fetch('/api/curadoria/playlists/item', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ channel: chData.key, playlistId, urlOrId }),
+            });
+            const json = await res.json();
+            if (!res.ok) throw new Error(json.error || 'Erro ao adicionar vídeo');
+            applyCuradoriaMutationResponse(json, chData.key);
+            renderCatalogView(container);
+            showToast(`Adicionado: ${json.addedItem?.title || urlOrId}`);
+          } catch (err) {
+            showToast(err.message);
+          }
+        };
+      });
+
+      const updatePlItem = async (pairStr, patch) => {
+        if (!state.serverMode) return;
+        const [playlistId, videoId] = pairStr.split('::');
+        try {
+          const res = await fetch('/api/curadoria/playlists/item', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ channel: chData.key, playlistId, videoId, ...patch }),
           });
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || 'Erro ao atualizar item');
+          applyCuradoriaMutationResponse(json, chData.key);
+          showToast('Item atualizado!');
+        } catch (err) {
+          showToast(err.message);
         }
       };
-    });
+
+      container.querySelectorAll('[data-pl-item-cat]').forEach((sel) => {
+        sel.onchange = () => updatePlItem(sel.dataset.plItemCat, { category: sel.value });
+      });
+      container.querySelectorAll('[data-pl-item-status]').forEach((sel) => {
+        sel.onchange = () => updatePlItem(sel.dataset.plItemStatus, { status: sel.value });
+      });
+      container.querySelectorAll('[data-pl-item-notes]').forEach((inp) => {
+        inp.onchange = () => updatePlItem(inp.dataset.plItemNotes, { notes: inp.value });
+      });
+      container.querySelectorAll('[data-pl-create-script]').forEach((btn) => {
+        btn.onclick = () => {
+          const [playlistId, videoId] = btn.dataset.plCreateScript.split('::');
+          const pl = playlists.find((p) => p.id === playlistId);
+          const item = (pl?.items || []).find((it) => (it.videoId || it.id) === videoId);
+          if (item) triggerCreateCuradoriaScript(item, item.notes || '', playlistId);
+        };
+      });
+      container.querySelectorAll('[data-open-doc]').forEach((btn) => {
+        btn.onclick = () => setView('scripts', btn.dataset.openDoc);
+      });
+      container.querySelectorAll('[data-pl-rem-item]').forEach((btn) => {
+        btn.onclick = async () => {
+          if (!state.serverMode) return;
+          const [playlistId, videoId] = btn.dataset.plRemItem.split('::');
+          try {
+            const res = await fetch(
+              `/api/curadoria/playlists/item?channel=${encodeURIComponent(chData.key)}&playlistId=${encodeURIComponent(playlistId)}&videoId=${encodeURIComponent(videoId)}`,
+              { method: 'DELETE' }
+            );
+            const json = await res.json();
+            if (!res.ok) throw new Error(json.error || 'Erro ao remover item');
+            applyCuradoriaMutationResponse(json, chData.key);
+            renderCatalogView(container);
+          } catch (err) {
+            showToast(err.message);
+          }
+        };
+      });
+    }
   }
 
   /* =========================================================
@@ -6723,6 +8315,1667 @@
   }
 
   /* =========================================================
+     VIEW 6B: ESTÚDIO DE GRAVAÇÃO MULTI-TRACK (v4)
+  ========================================================= */
+  const recRuntime = {
+    screenStream: null,
+    camStream: null,
+    micStream: null,
+    audioCtx: null,
+    analyser: null,
+    vuRafId: null,
+    canvasRafId: null,
+    canvasEl: null,
+    screenVideoEl: null,
+    camVideoEl: null,
+    recorders: [],
+    recordedBlobs: {},
+  };
+
+  function stopStreamTracks(stream) {
+    if (!stream) return;
+    try {
+      stream.getTracks().forEach((t) => t.stop());
+    } catch {
+      // ignora
+    }
+  }
+
+  function stopRecorderMediaStreams() {
+    if (recRuntime.vuRafId) {
+      cancelAnimationFrame(recRuntime.vuRafId);
+      recRuntime.vuRafId = null;
+    }
+    if (recRuntime.canvasRafId) {
+      cancelAnimationFrame(recRuntime.canvasRafId);
+      recRuntime.canvasRafId = null;
+    }
+    if (state.recorder.timerId) {
+      clearInterval(state.recorder.timerId);
+      state.recorder.timerId = null;
+    }
+    if (state.recorder.prompterRafId) {
+      cancelAnimationFrame(state.recorder.prompterRafId);
+      state.recorder.prompterRafId = null;
+    }
+    state.recorder.prompterPlaying = false;
+    stopStreamTracks(recRuntime.screenStream);
+    stopStreamTracks(recRuntime.camStream);
+    stopStreamTracks(recRuntime.micStream);
+    recRuntime.screenStream = null;
+    recRuntime.camStream = null;
+    recRuntime.micStream = null;
+    if (recRuntime.audioCtx) {
+      try {
+        recRuntime.audioCtx.close();
+      } catch {
+        // ignora
+      }
+      recRuntime.audioCtx = null;
+      recRuntime.analyser = null;
+    }
+    state.recorder.micLevel = 0;
+  }
+
+  async function refreshRecorderDevices() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      state.recorder.devices = {
+        cameras: devices.filter((d) => d.kind === 'videoinput'),
+        mics: devices.filter((d) => d.kind === 'audioinput'),
+      };
+      if (!state.recorder.selectedCamId && state.recorder.devices.cameras[0]) {
+        state.recorder.selectedCamId = state.recorder.devices.cameras[0].deviceId;
+      }
+      if (!state.recorder.selectedMicId && state.recorder.devices.mics[0]) {
+        state.recorder.selectedMicId = state.recorder.devices.mics[0].deviceId;
+      }
+    } catch {
+      // Navegador bloqueou enumeração sem permissão prévia
+    }
+  }
+
+  async function loadRecordingsLibrary(channelKey, { rerender = true } = {}) {
+    if (!state.serverMode) return;
+    state.recorder.loading = true;
+    try {
+      const res = await fetch(`/api/recordings?channel=${encodeURIComponent(channelKey)}`, { cache: 'no-store' });
+      const json = await res.json();
+      if (res.ok) {
+        state.recorder.sessions = Array.isArray(json.sessions) ? json.sessions : [];
+        state.recorder.ffmpegAvailable = Boolean(json.ffmpegAvailable);
+        state.recorder.recordingsDir = json.recordingsDir || '';
+        state.recorder.sessionsChannel = channelKey;
+      }
+    } catch {
+      // mantém estado atual
+    } finally {
+      state.recorder.loading = false;
+      if (rerender && state.view === 'recorder' && state.activeChannel === channelKey) {
+        renderRecorderLibrarySection();
+      }
+    }
+  }
+
+  function formatRecTimer(totalSec) {
+    const mins = Math.floor(totalSec / 60);
+    const secs = Math.floor(totalSec % 60);
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
+
+  function formatBytesCompact(bytes) {
+    const b = Number(bytes || 0);
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+    return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function pickRecorderMime(kind) {
+    if (!global.MediaRecorder || typeof MediaRecorder.isTypeSupported !== 'function') return '';
+    const candidates =
+      kind === 'audio'
+        ? ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']
+        : ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+    return candidates.find((m) => MediaRecorder.isTypeSupported(m)) || '';
+  }
+
+  function startMicVuLoop(micStream) {
+    if (!micStream || !micStream.getAudioTracks().length) return;
+    const AudioCtx = global.AudioContext || global.webkitAudioContext;
+    if (!AudioCtx) return;
+    try {
+      if (recRuntime.audioCtx) recRuntime.audioCtx.close().catch(() => {});
+      const ctx = new AudioCtx();
+      const src = ctx.createMediaStreamSource(micStream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      src.connect(analyser);
+      recRuntime.audioCtx = ctx;
+      recRuntime.analyser = analyser;
+
+      const dataArr = new Uint8Array(analyser.frequencyBinCount);
+      const tick = () => {
+        if (!recRuntime.analyser || state.view !== 'recorder') return;
+        analyser.getByteTimeDomainData(dataArr);
+        let sum = 0;
+        for (let i = 0; i < dataArr.length; i++) {
+          const v = (dataArr[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / dataArr.length);
+        const pct = Math.min(100, Math.round(rms * 260));
+        state.recorder.micLevel = pct;
+        const bar = document.getElementById('recVuFill');
+        const lbl = document.getElementById('recVuPct');
+        if (bar) bar.style.width = `${pct}%`;
+        if (lbl) lbl.textContent = `${pct}%`;
+        recRuntime.vuRafId = requestAnimationFrame(tick);
+      };
+      recRuntime.vuRafId = requestAnimationFrame(tick);
+    } catch {
+      // Ignora erro de AudioContext sem interação
+    }
+  }
+
+  function startPipCanvasLoop() {
+    const canvas = document.getElementById('recPreviewCanvas');
+    if (!canvas) return;
+    canvas.width = 1280;
+    canvas.height = 720;
+    const ctx = canvas.getContext('2d');
+    recRuntime.canvasEl = canvas;
+
+    if (!recRuntime.screenVideoEl) {
+      recRuntime.screenVideoEl = document.createElement('video');
+      recRuntime.screenVideoEl.muted = true;
+      recRuntime.screenVideoEl.playsInline = true;
+    }
+    if (!recRuntime.camVideoEl) {
+      recRuntime.camVideoEl = document.createElement('video');
+      recRuntime.camVideoEl.muted = true;
+      recRuntime.camVideoEl.playsInline = true;
+    }
+
+    if (recRuntime.screenStream) {
+      recRuntime.screenVideoEl.srcObject = recRuntime.screenStream;
+      recRuntime.screenVideoEl.play().catch(() => {});
+    }
+    if (recRuntime.camStream) {
+      recRuntime.camVideoEl.srcObject = recRuntime.camStream;
+      recRuntime.camVideoEl.play().catch(() => {});
+    }
+
+    const draw = () => {
+      if (state.view !== 'recorder' || !recRuntime.canvasEl) return;
+      ctx.fillStyle = '#07080f';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const sv = recRuntime.screenVideoEl;
+      if (sv && sv.readyState >= 2 && sv.videoWidth > 0) {
+        const scale = Math.min(canvas.width / sv.videoWidth, canvas.height / sv.videoHeight);
+        const dw = sv.videoWidth * scale;
+        const dh = sv.videoHeight * scale;
+        ctx.drawImage(sv, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
+      } else {
+        ctx.fillStyle = '#646b82';
+        ctx.font = '600 22px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Aguardando captura de tela...', canvas.width / 2, canvas.height / 2);
+      }
+
+      const cv = recRuntime.camVideoEl;
+      if (cv && cv.readyState >= 2 && cv.videoWidth > 0) {
+        const sizeRatio = state.recorder.pipSize === 'lg' ? 0.34 : state.recorder.pipSize === 'sm' ? 0.2 : 0.27;
+        const pw = Math.round(canvas.width * sizeRatio);
+        const ph = Math.round((pw * cv.videoHeight) / Math.max(1, cv.videoWidth));
+        const margin = 24;
+        const pos = state.recorder.pipPos || 'bottom-right';
+        const px = pos.includes('left') ? margin : canvas.width - pw - margin;
+        const py = pos.includes('top') ? margin : canvas.height - ph - margin;
+
+        ctx.save();
+        ctx.beginPath();
+        const rad = 16;
+        ctx.roundRect ? ctx.roundRect(px, py, pw, ph, rad) : ctx.rect(px, py, pw, ph);
+        ctx.clip();
+        ctx.drawImage(cv, px, py, pw, ph);
+        ctx.restore();
+
+        ctx.strokeStyle = 'rgba(225, 45, 120, 0.85)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.roundRect ? ctx.roundRect(px, py, pw, ph, rad) : ctx.rect(px, py, pw, ph);
+        ctx.stroke();
+      }
+
+      recRuntime.canvasRafId = requestAnimationFrame(draw);
+    };
+    if (recRuntime.canvasRafId) cancelAnimationFrame(recRuntime.canvasRafId);
+    recRuntime.canvasRafId = requestAnimationFrame(draw);
+  }
+
+  async function acquireRecorderStreams({ includeScreen, includeCam, includeMic }) {
+    if (!navigator.mediaDevices) {
+      throw new Error('MediaDevices API indisponível neste contexto (use localhost ou HTTPS).');
+    }
+
+    if (includeMic && !recRuntime.micStream) {
+      const audioConstraints = state.recorder.selectedMicId
+        ? { deviceId: { exact: state.recorder.selectedMicId } }
+        : true;
+      recRuntime.micStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
+      startMicVuLoop(recRuntime.micStream);
+    }
+
+    if (includeCam && !recRuntime.camStream) {
+      const videoConstraints = state.recorder.selectedCamId
+        ? { deviceId: { exact: state.recorder.selectedCamId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+        : { width: { ideal: 1280 }, height: { ideal: 720 } };
+      recRuntime.camStream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
+    }
+
+    if (includeScreen && !recRuntime.screenStream) {
+      recRuntime.screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: 30 },
+        audio: true,
+      });
+    }
+
+    await refreshRecorderDevices();
+  }
+
+  function renderRecorderPreviewElement() {
+    const mode = state.recorder.mode;
+    const vidEl = document.getElementById('recPreviewVideo');
+    const canvasEl = document.getElementById('recPreviewCanvas');
+    const idleEl = document.getElementById('recPreviewIdle');
+    if (!vidEl || !canvasEl || !idleEl) return;
+
+    if (mode === 'all-and-separate' && (recRuntime.screenStream || recRuntime.camStream)) {
+      canvasEl.classList.remove('hidden');
+      vidEl.classList.add('hidden');
+      idleEl.classList.add('hidden');
+      startPipCanvasLoop();
+      return;
+    }
+
+    canvasEl.classList.add('hidden');
+    if (mode === 'webcam-voice' && recRuntime.camStream) {
+      vidEl.srcObject = recRuntime.camStream;
+      vidEl.classList.remove('hidden');
+      idleEl.classList.add('hidden');
+      vidEl.play().catch(() => {});
+      return;
+    }
+
+    if ((mode === 'screen-voice' || mode === 'screen-only') && recRuntime.screenStream) {
+      vidEl.srcObject = recRuntime.screenStream;
+      vidEl.classList.remove('hidden');
+      idleEl.classList.add('hidden');
+      vidEl.play().catch(() => {});
+      return;
+    }
+
+    vidEl.classList.add('hidden');
+    idleEl.classList.remove('hidden');
+  }
+
+  function renderRecorderLibrarySection() {
+    const box = document.getElementById('recLibraryContainer');
+    if (!box) return;
+    const chData = getActiveChannelData();
+    const sessions = state.recorder.sessions || [];
+    const trackLabels = {
+      combinado: '🎬 Combinado',
+      tela: '🖥 Tela',
+      webcam: '📷 Webcam',
+      voz: '🎙 Voz',
+      outro: '📎 Faixa',
+    };
+
+    if (!state.serverMode) {
+      box.innerHTML = '<div class="glass-card"><p style="margin:0; color:var(--text-3);">A biblioteca e gravação em disco exigem o servidor local ativo.</p></div>';
+      return;
+    }
+
+    if (!sessions.length) {
+      box.innerHTML = `
+        <div class="glass-card">
+          <p style="margin:0; color:var(--text-3);">Nenhuma gravação salva ainda em <code>${MD.escapeHtml(chData.key)}/gravacoes/</code>. Clique em <strong>● Gravar</strong> acima para capturar seu primeiro take!</p>
+        </div>
+      `;
+      return;
+    }
+
+    box.innerHTML = `
+      <div class="rec-library-list">
+        ${sessions
+          .map(
+            (sess) => `
+              <article class="glass-card">
+                <div class="gc-top" style="flex-wrap:wrap;">
+                  <div>
+                    <strong style="font-size:15px;">${MD.escapeHtml(sess.title)}</strong>
+                    <div style="font-family:var(--font-mono); font-size:11px; color:var(--text-3); margin-top:2px;">
+                      ${MD.escapeHtml(sess.relDir)} • ${(sess.takes || []).length} take(s)
+                    </div>
+                  </div>
+                  <div style="display:flex; gap:7px; flex-wrap:wrap;">
+                    <button type="button" class="btn-sm" data-rec-copy-dir="${MD.escapeHtml(sess.dirPath || sess.relDir)}">📋 Copiar Pasta</button>
+                    <button type="button" class="btn-sm btn-danger" data-rec-del-session="${MD.escapeHtml(sess.id)}">Excluir Sessão</button>
+                  </div>
+                </div>
+
+                ${(sess.takes || [])
+                  .map((tk) => {
+                    const activePl = state.recorder.activePlayer;
+                    const isPlayingThis = activePl && activePl.sessionId === sess.id && activePl.takeId === tk.id;
+                    const convertibleTrack = (tk.tracks || []).find(
+                      (t) => t.ext === 'webm' && ['combinado', 'tela', 'webcam'].includes(t.kind) && !tk.tracks.some((m) => m.fileName === `${t.fileName.replace(/\.webm$/i, '')}.mp4`)
+                    );
+                    const mp4Targets = (tk.tracks || []).filter(
+                      (t) => t.ext === 'webm' && ['combinado', 'tela', 'webcam'].includes(t.kind)
+                    );
+                    return `
+                      <div class="rec-take-card">
+                        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+                          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <span class="status-pill st-gravando">${MD.escapeHtml(tk.id)}</span>
+                            <span style="font-family:var(--font-mono); font-size:11px; color:var(--text-2);">${MD.escapeHtml(tk.mode || '')}</span>
+                            ${tk.scriptPath ? `<button type="button" class="kc-move-btn" data-open-doc="${MD.escapeHtml(tk.scriptPath)}">📄 ${MD.escapeHtml(tk.scriptPath)}</button>` : ''}
+                          </div>
+                          <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                            ${mp4Targets
+                              .map((mt) => {
+                                const convKey = `${sess.id}::${tk.id}::${mt.fileName}`;
+                                const hasMp4 = tk.tracks.some((x) => x.fileName === `${mt.fileName.replace(/\.webm$/i, '')}.mp4`);
+                                if (hasMp4) return '';
+                                return `<button type="button" class="btn-sm" data-rec-mp4="${MD.escapeHtml(convKey)}"${state.recorder.convertingKey === convKey ? ' disabled' : ''}>${state.recorder.convertingKey === convKey ? 'Convertendo...' : `🎬 Converter MP4 (${MD.escapeHtml(mt.kind)})`}</button>`;
+                              })
+                              .join('')}
+                            ${!mp4Targets.length && convertibleTrack ? '' : ''}
+                            <button type="button" class="btn-sm btn-danger" data-rec-del-take="${MD.escapeHtml(sess.id)}::${MD.escapeHtml(tk.id)}">Excluir Take</button>
+                          </div>
+                        </div>
+
+                        <div class="rec-track-badges">
+                          ${(tk.tracks || [])
+                            .map((tr) => {
+                              const label = `${trackLabels[tr.kind] || tr.kind} (${tr.ext.toUpperCase()})`;
+                              const mediaUrl = `/api/recordings/media?channel=${encodeURIComponent(chData.key)}&path=${encodeURIComponent(tr.relPath)}`;
+                              return `
+                                <button type="button" class="rec-track-pill" data-rec-play="${MD.escapeHtml(sess.id)}::${MD.escapeHtml(tk.id)}::${MD.escapeHtml(tr.relPath)}::${MD.escapeHtml(tr.mediaKind || 'video')}" title="Reproduzir ${MD.escapeHtml(tr.fileName)} (${formatBytesCompact(tr.size)})">
+                                  <span>▶ ${MD.escapeHtml(label)}</span>
+                                  <small style="color:var(--text-3);">${formatBytesCompact(tr.size)}</small>
+                                </button>
+                                <a class="kc-move-btn" href="${mediaUrl}" download="${MD.escapeHtml(tr.fileName)}" title="Baixar ${MD.escapeHtml(tr.fileName)}">⬇</a>
+                              `;
+                            })
+                            .join('') || '<span style="font-size:11.5px; color:var(--text-3);">Sem faixas gravadas neste take.</span>'}
+                        </div>
+
+                        ${isPlayingThis
+                          ? `
+                            <div class="rec-player-box">
+                              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                <span style="font-family:var(--font-mono); font-size:11px; color:var(--text-2);">${MD.escapeHtml(activePl.relPath)}</span>
+                                <button type="button" class="btn-sm" id="recClosePlayerBtn">✕ Fechar Player</button>
+                              </div>
+                              ${activePl.mediaKind === 'audio'
+                                ? `<audio controls autoplay src="/api/recordings/media?channel=${encodeURIComponent(chData.key)}&path=${encodeURIComponent(activePl.relPath)}"></audio>`
+                                : `<video controls autoplay playsinline src="/api/recordings/media?channel=${encodeURIComponent(chData.key)}&path=${encodeURIComponent(activePl.relPath)}"></video>`}
+                            </div>
+                          `
+                          : ''}
+                      </div>
+                    `;
+                  })
+                  .join('')}
+              </article>
+            `
+          )
+          .join('')}
+      </div>
+    `;
+
+    box.querySelectorAll('[data-rec-copy-dir]').forEach((btn) => {
+      btn.onclick = () => copyText(btn.dataset.recCopyDir, 'Caminho da pasta copiado!');
+    });
+    box.querySelectorAll('[data-open-doc]').forEach((btn) => {
+      btn.onclick = () => setView('scripts', btn.dataset.openDoc);
+    });
+    box.querySelectorAll('[data-rec-play]').forEach((btn) => {
+      btn.onclick = () => {
+        const [sessionId, takeId, relPath, mediaKind] = btn.dataset.recPlay.split('::');
+        state.recorder.activePlayer = { sessionId, takeId, relPath, mediaKind };
+        renderRecorderLibrarySection();
+      };
+    });
+    document.getElementById('recClosePlayerBtn')?.addEventListener('click', () => {
+      state.recorder.activePlayer = null;
+      renderRecorderLibrarySection();
+    });
+    box.querySelectorAll('[data-rec-mp4]').forEach((btn) => {
+      btn.onclick = async () => {
+        const [sessionId, takeId, fileName] = btn.dataset.recMp4.split('::');
+        state.recorder.convertingKey = btn.dataset.recMp4;
+        renderRecorderLibrarySection();
+        try {
+          const res = await fetch('/api/recordings/convert-mp4', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ channel: chData.key, sessionId, takeId, fileName }),
+          });
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || 'Erro ao converter para MP4');
+          if (json.state) state.data = normalizePayload(json.state);
+          showToast(`MP4 gerado: ${json.track?.fileName || 'ok'}`);
+          await loadRecordingsLibrary(chData.key);
+        } catch (err) {
+          showToast(err.message);
+        } finally {
+          state.recorder.convertingKey = '';
+          renderRecorderLibrarySection();
+        }
+      };
+    });
+    box.querySelectorAll('[data-rec-del-take]').forEach((btn) => {
+      btn.onclick = async () => {
+        const [sessionId, takeId] = btn.dataset.recDelTake.split('::');
+        if (!confirm(`Excluir o ${takeId} da sessão ${sessionId}?`)) return;
+        try {
+          const res = await fetch(
+            `/api/recordings?channel=${encodeURIComponent(chData.key)}&sessionId=${encodeURIComponent(sessionId)}&takeId=${encodeURIComponent(takeId)}`,
+            { method: 'DELETE' }
+          );
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || 'Erro ao excluir take');
+          if (json.state) state.data = normalizePayload(json.state);
+          await loadRecordingsLibrary(chData.key);
+          showToast('Take excluído.');
+        } catch (err) {
+          showToast(err.message);
+        }
+      };
+    });
+    box.querySelectorAll('[data-rec-del-session]').forEach((btn) => {
+      btn.onclick = async () => {
+        const sessionId = btn.dataset.recDelSession;
+        if (!confirm(`Excluir toda a sessão "${sessionId}" e suas faixas?`)) return;
+        try {
+          const res = await fetch(
+            `/api/recordings?channel=${encodeURIComponent(chData.key)}&sessionId=${encodeURIComponent(sessionId)}`,
+            { method: 'DELETE' }
+          );
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || 'Erro ao excluir sessão');
+          if (json.state) state.data = normalizePayload(json.state);
+          await loadRecordingsLibrary(chData.key);
+          showToast('Sessão removida.');
+        } catch (err) {
+          showToast(err.message);
+        }
+      };
+    });
+  }
+
+  function renderRecorderView(container) {
+    if (!container) return;
+    const chData = getActiveChannelData();
+    const docs = chData.docs || [];
+    const rec = state.recorder;
+
+    if (!rec.devices.cameras.length && !rec.devices.mics.length) {
+      refreshRecorderDevices();
+    }
+    if (state.serverMode && rec.sessionsChannel !== chData.key && !rec.loading) {
+      loadRecordingsLibrary(chData.key, { rerender: true });
+    }
+
+    const linkedDoc = docs.find((d) => d.path === rec.linkedDocPath) || null;
+    const modes = [
+      { id: 'all-and-separate', label: '🎬 Tudo Junto + Separado (PiP + 3 faixas)' },
+      { id: 'screen-voice', label: '🖥 Tela + Voz' },
+      { id: 'webcam-voice', label: '📷 Webcam + Voz' },
+      { id: 'voice-only', label: '🎙 Só Narração (Voz)' },
+      { id: 'screen-only', label: '🖥 Só Tela' },
+    ];
+
+    container.innerHTML = `
+      <div class="rec-grid">
+        <section class="rec-card">
+          <div class="section-subhead" style="margin:0;">
+            <div>
+              <h2 class="panel-title" style="font-size:16px;">Estúdio Multi-Track (${MD.escapeHtml(chData.channel?.name || chData.key)})</h2>
+              <span style="font-size:12px; color:var(--text-3);">Captura combinada em PiP + faixas separadas (.webm) e extração automática de <code>04-voz.wav</code>.</span>
+            </div>
+            <span class="settings-path-badge ${rec.ffmpegAvailable ? 'is-ok' : 'is-miss'}" id="recFfmpegBadge">
+              ${rec.ffmpegAvailable ? '✓ ffmpeg ativo (.wav / MP4)' : '⚠ ffmpeg não detectado'}
+            </span>
+          </div>
+
+          <div class="rec-mode-pills" id="recModePills">
+            ${modes
+              .map(
+                (m) => `<button type="button" class="rec-mode-btn${rec.mode === m.id ? ' active' : ''}" data-rec-mode="${m.id}">${MD.escapeHtml(m.label)}</button>`
+              )
+              .join('')}
+          </div>
+
+          <div class="form-row-2">
+            <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-2);">
+              <span>Título / Slug da Sessão</span>
+              <input type="text" class="search-box-sm" id="recTitleInput" placeholder="Ex.: Episódio GTA 6 Parte 1" value="${MD.escapeHtml(rec.titleDraft || '')}" style="margin:0;">
+            </label>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+              <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-2);">
+                <span>Posição PiP</span>
+                <select class="select-dark" id="recPipPosSel">
+                  <option value="bottom-right"${rec.pipPos === 'bottom-right' ? ' selected' : ''}>Inferior Direita</option>
+                  <option value="bottom-left"${rec.pipPos === 'bottom-left' ? ' selected' : ''}>Inferior Esquerda</option>
+                  <option value="top-right"${rec.pipPos === 'top-right' ? ' selected' : ''}>Superior Direita</option>
+                  <option value="top-left"${rec.pipPos === 'top-left' ? ' selected' : ''}>Superior Esquerda</option>
+                </select>
+              </label>
+              <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-2);">
+                <span>Tamanho PiP</span>
+                <select class="select-dark" id="recPipSizeSel">
+                  <option value="sm"${rec.pipSize === 'sm' ? ' selected' : ''}>Pequena</option>
+                  <option value="md"${rec.pipSize === 'md' ? ' selected' : ''}>Média</option>
+                  <option value="lg"${rec.pipSize === 'lg' ? ' selected' : ''}>Grande</option>
+                </select>
+              </label>
+            </div>
+          </div>
+
+          <div class="form-row-2">
+            <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-2);">
+              <span>Câmera</span>
+              <select class="select-dark" id="recCamSel">
+                <option value="">Câmera padrão do sistema</option>
+                ${(rec.devices.cameras || [])
+                  .map(
+                    (d, idx) => `<option value="${MD.escapeHtml(d.deviceId)}"${rec.selectedCamId === d.deviceId ? ' selected' : ''}>${MD.escapeHtml(d.label || `Câmera ${idx + 1}`)}</option>`
+                  )
+                  .join('')}
+              </select>
+            </label>
+            <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-2);">
+              <span>Microfone</span>
+              <select class="select-dark" id="recMicSel">
+                <option value="">Microfone padrão do sistema</option>
+                ${(rec.devices.mics || [])
+                  .map(
+                    (d, idx) => `<option value="${MD.escapeHtml(d.deviceId)}"${rec.selectedMicId === d.deviceId ? ' selected' : ''}>${MD.escapeHtml(d.label || `Microfone ${idx + 1}`)}</option>`
+                  )
+                  .join('')}
+              </select>
+            </label>
+          </div>
+
+          <div class="rec-preview-stage">
+            <canvas id="recPreviewCanvas" class="hidden"></canvas>
+            <video id="recPreviewVideo" class="hidden" muted playsinline></video>
+            <div id="recPreviewIdle" style="padding:20px; text-align:center; color:var(--text-3); font-size:13px;">
+              Clique em <strong>👁 Pré-visualizar</strong> ou <strong>● Gravar</strong> para ativar os dispositivos deste modo.
+            </div>
+            <div class="rec-live-badge${rec.status === 'recording' ? ' is-recording' : ''}" id="recStatusBadge">
+              <span class="rec-live-dot"></span>
+              <span id="recStatusText">${rec.status === 'recording' ? 'REC' : rec.status === 'paused' ? 'PAUSADO' : 'PRONTO'}</span>
+              <span id="recTimerDisplay">${formatRecTimer(rec.elapsedSec || 0)}</span>
+            </div>
+          </div>
+
+          <div class="rec-vu-wrap">
+            <span style="font-family:var(--font-mono); font-size:11px; color:var(--text-2);">🎙 VU Voz</span>
+            <div class="rec-vu-bar"><div class="rec-vu-fill" id="recVuFill" style="width:${rec.micLevel || 0}%;"></div></div>
+            <span style="font-family:var(--font-mono); font-size:11px; color:var(--text-3); min-width:34px; text-align:right;" id="recVuPct">${rec.micLevel || 0}%</span>
+          </div>
+
+          <div class="rec-controls-bar">
+            <button type="button" class="btn-sm" id="recPreviewBtn">👁 Pré-visualizar</button>
+            <button type="button" class="rec-btn-record" id="recStartBtn"${rec.status !== 'idle' || rec.uploading ? ' disabled' : ''}>● Gravar</button>
+            <button type="button" class="btn-sm" id="recPauseBtn"${rec.status === 'idle' ? ' disabled' : ''}>${rec.status === 'paused' ? '▶ Retomar' : '⏸ Pausar'}</button>
+            <button type="button" class="btn-sm btn-accent" id="recStopSaveBtn"${rec.status === 'idle' || rec.uploading ? ' disabled' : ''}>⏹ Finalizar & Salvar</button>
+            <button type="button" class="btn-sm" id="recRefreshDevicesBtn">↻ Dispositivos</button>
+          </div>
+
+          ${rec.uploadProgress ? `<div class="settings-toggle-row" style="font-size:12px; color:var(--info);">${MD.escapeHtml(rec.uploadProgress)}</div>` : ''}
+          ${rec.lastSavedInfo
+            ? `<div class="settings-toggle-row" style="border-color:rgba(54,211,153,0.4); background:rgba(54,211,153,0.08); font-size:12px; color:#86efac;">
+                <div>
+                  <strong>✓ Take salvo em <code>${MD.escapeHtml(rec.lastSavedInfo.relDir)}</code></strong>
+                  <div style="font-size:11px; color:var(--text-2); margin-top:2px;">${MD.escapeHtml(rec.lastSavedInfo.note)}</div>
+                </div>
+                <button type="button" class="btn-sm" id="recCopyLastDirBtn">Copiar Pasta</button>
+              </div>`
+            : ''}
+        </section>
+
+        <section class="rec-card">
+          <div class="section-subhead" style="margin:0;">
+            <h2 class="panel-title" style="font-size:15px;">Roteiro Vinculado & Mini Teleprompter</h2>
+            <div class="zoom-group">
+              <button type="button" id="recPrompterFontMinus">A-</button>
+              <span id="recPrompterFontVal">${rec.prompterFontSize}px</span>
+              <button type="button" id="recPrompterFontPlus">A+</button>
+            </div>
+          </div>
+
+          <select class="select-dark" id="recScriptSel" style="width:100%;">
+            <option value="">Nenhum roteiro vinculado (gravação livre)</option>
+            ${docs.map((d) => `<option value="${MD.escapeHtml(d.path)}"${rec.linkedDocPath === d.path ? ' selected' : ''}>${MD.escapeHtml(d.meta.titulo)} (${MD.escapeHtml(d.path)})</option>`).join('')}
+          </select>
+
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <button type="button" class="btn-sm btn-accent" id="recPrompterPlayBtn">${rec.prompterPlaying ? '⏸ Pausar Teleprompter' : '▶ Play Teleprompter'}</button>
+            <button type="button" class="btn-sm" id="recPrompterTopBtn">↺ Topo</button>
+            <label style="display:inline-flex; align-items:center; gap:6px; font-size:11.5px; color:var(--text-2); margin-left:auto;">
+              <span>Velocidade</span>
+              <input type="range" id="recPrompterSpeedRange" min="0.5" max="5.5" step="0.5" value="${rec.prompterSpeed}" style="width:90px;">
+            </label>
+          </div>
+
+          <div class="rec-teleprompter-box" id="recPrompterBox" style="font-size:${rec.prompterFontSize}px;">
+            ${linkedDoc
+              ? MD.escapeHtml(linkedDoc.body || '')
+              : '<span style="color:var(--text-3);">Selecione um roteiro acima para narrar acompanhando o mini teleprompter em tempo real.</span>'}
+          </div>
+        </section>
+      </div>
+
+      <div class="section-subhead">
+        <h2 class="panel-title" style="font-size:16px;">Biblioteca de Gravações (${(rec.sessions || []).length} sessões)</h2>
+        <button type="button" class="btn-sm" id="recReloadLibBtn">↻ Atualizar Biblioteca</button>
+      </div>
+      <div id="recLibraryContainer"></div>
+    `;
+
+    renderRecorderPreviewElement();
+    renderRecorderLibrarySection();
+
+    container.querySelectorAll('[data-rec-mode]').forEach((btn) => {
+      btn.onclick = () => {
+        if (state.recorder.status !== 'idle') {
+          showToast('Pare a gravação antes de mudar o modo.');
+          return;
+        }
+        state.recorder.mode = btn.dataset.recMode;
+        renderRecorderView(container);
+      };
+    });
+
+    document.getElementById('recTitleInput')?.addEventListener('input', (e) => {
+      state.recorder.titleDraft = e.target.value;
+    });
+    document.getElementById('recPipPosSel')?.addEventListener('change', (e) => {
+      state.recorder.pipPos = e.target.value;
+    });
+    document.getElementById('recPipSizeSel')?.addEventListener('change', (e) => {
+      state.recorder.pipSize = e.target.value;
+    });
+    document.getElementById('recCamSel')?.addEventListener('change', (e) => {
+      state.recorder.selectedCamId = e.target.value;
+    });
+    document.getElementById('recMicSel')?.addEventListener('change', (e) => {
+      state.recorder.selectedMicId = e.target.value;
+    });
+
+    document.getElementById('recRefreshDevicesBtn')?.addEventListener('click', async () => {
+      await refreshRecorderDevices();
+      renderRecorderView(container);
+      showToast('Lista de dispositivos atualizada.');
+    });
+
+    document.getElementById('recPreviewBtn')?.addEventListener('click', async () => {
+      try {
+        stopRecorderMediaStreams();
+        const m = state.recorder.mode;
+        await acquireRecorderStreams({
+          includeScreen: m === 'all-and-separate' || m === 'screen-voice' || m === 'screen-only',
+          includeCam: m === 'all-and-separate' || m === 'webcam-voice',
+          includeMic: m !== 'screen-only',
+        });
+        renderRecorderView(container);
+        showToast('Pré-visualização pronta!');
+      } catch (err) {
+        showToast(`Permissão ou dispositivo indisponível: ${err.message}`);
+      }
+    });
+
+    document.getElementById('recStartBtn')?.addEventListener('click', async () => {
+      if (!state.serverMode) {
+        showToast('Salvar gravações no disco exige o servidor local ativo.');
+        return;
+      }
+      if (!global.MediaRecorder) {
+        showToast('MediaRecorder API não suportada neste navegador.');
+        return;
+      }
+      const m = state.recorder.mode;
+      try {
+        await acquireRecorderStreams({
+          includeScreen: m === 'all-and-separate' || m === 'screen-voice' || m === 'screen-only',
+          includeCam: m === 'all-and-separate' || m === 'webcam-voice',
+          includeMic: m !== 'screen-only',
+        });
+      } catch (err) {
+        showToast(`Não foi possível capturar mídia: ${err.message}`);
+        return;
+      }
+
+      renderRecorderPreviewElement();
+
+      const tracksToRecord = [];
+      if (m === 'all-and-separate') {
+        const canvas = document.getElementById('recPreviewCanvas');
+        if (canvas && canvas.captureStream) {
+          const canvasStream = canvas.captureStream(30);
+          const combinedTracks = [...canvasStream.getVideoTracks()];
+          if (recRuntime.micStream) combinedTracks.push(...recRuntime.micStream.getAudioTracks().map((t) => t.clone()));
+          tracksToRecord.push({ kind: 'combinado', stream: new MediaStream(combinedTracks), mediaKind: 'video' });
+        }
+        if (recRuntime.screenStream) {
+          tracksToRecord.push({ kind: 'tela', stream: recRuntime.screenStream, mediaKind: 'video' });
+        }
+        if (recRuntime.camStream) {
+          tracksToRecord.push({ kind: 'webcam', stream: recRuntime.camStream, mediaKind: 'video' });
+        }
+        if (recRuntime.micStream) {
+          tracksToRecord.push({ kind: 'voz', stream: recRuntime.micStream, mediaKind: 'audio' });
+        }
+      } else if (m === 'screen-voice') {
+        if (recRuntime.screenStream) {
+          const mixed = [...recRuntime.screenStream.getVideoTracks()];
+          if (recRuntime.micStream) mixed.push(...recRuntime.micStream.getAudioTracks().map((t) => t.clone()));
+          tracksToRecord.push({ kind: 'tela', stream: new MediaStream(mixed), mediaKind: 'video' });
+        }
+        if (recRuntime.micStream) {
+          tracksToRecord.push({ kind: 'voz', stream: recRuntime.micStream, mediaKind: 'audio' });
+        }
+      } else if (m === 'webcam-voice') {
+        if (recRuntime.camStream) {
+          const mixed = [...recRuntime.camStream.getVideoTracks()];
+          if (recRuntime.micStream) mixed.push(...recRuntime.micStream.getAudioTracks().map((t) => t.clone()));
+          tracksToRecord.push({ kind: 'webcam', stream: new MediaStream(mixed), mediaKind: 'video' });
+        }
+        if (recRuntime.micStream) {
+          tracksToRecord.push({ kind: 'voz', stream: recRuntime.micStream, mediaKind: 'audio' });
+        }
+      } else if (m === 'voice-only') {
+        if (recRuntime.micStream) {
+          tracksToRecord.push({ kind: 'voz', stream: recRuntime.micStream, mediaKind: 'audio' });
+        }
+      } else if (m === 'screen-only') {
+        if (recRuntime.screenStream) {
+          tracksToRecord.push({ kind: 'tela', stream: recRuntime.screenStream, mediaKind: 'video' });
+        }
+      }
+
+      if (!tracksToRecord.length) {
+        showToast('Nenhuma faixa disponível para gravar neste modo.');
+        return;
+      }
+
+      recRuntime.recorders = [];
+      recRuntime.recordedBlobs = {};
+      for (const item of tracksToRecord) {
+        const mimeType = pickRecorderMime(item.mediaKind);
+        const mr = mimeType ? new MediaRecorder(item.stream, { mimeType }) : new MediaRecorder(item.stream);
+        const chunks = [];
+        mr.ondataavailable = (ev) => {
+          if (ev.data && ev.data.size > 0) chunks.push(ev.data);
+        };
+        const stopPromise = new Promise((resolve) => {
+          mr.onstop = () => {
+            const blob = new Blob(chunks, { type: mimeType || (item.mediaKind === 'audio' ? 'audio/webm' : 'video/webm') });
+            recRuntime.recordedBlobs[item.kind] = blob;
+            resolve({ kind: item.kind, blob });
+          };
+        });
+        mr.start(1000);
+        recRuntime.recorders.push({ kind: item.kind, mr, stopPromise });
+      }
+
+      state.recorder.status = 'recording';
+      state.recorder.startedAt = Date.now();
+      state.recorder.elapsedSec = 0;
+      state.recorder.lastSavedInfo = null;
+      if (state.recorder.timerId) clearInterval(state.recorder.timerId);
+      state.recorder.timerId = setInterval(() => {
+        if (state.recorder.status === 'recording') {
+          state.recorder.elapsedSec += 1;
+          const timerEl = document.getElementById('recTimerDisplay');
+          if (timerEl) timerEl.textContent = formatRecTimer(state.recorder.elapsedSec);
+        }
+      }, 1000);
+
+      renderRecorderView(container);
+      showToast(`Gravação iniciada (${tracksToRecord.length} faixa(s))!`);
+    });
+
+    document.getElementById('recPauseBtn')?.addEventListener('click', () => {
+      if (state.recorder.status === 'recording') {
+        recRuntime.recorders.forEach((r) => {
+          if (r.mr.state === 'recording') r.mr.pause();
+        });
+        state.recorder.status = 'paused';
+        renderRecorderView(container);
+      } else if (state.recorder.status === 'paused') {
+        recRuntime.recorders.forEach((r) => {
+          if (r.mr.state === 'paused') r.mr.resume();
+        });
+        state.recorder.status = 'recording';
+        renderRecorderView(container);
+      }
+    });
+
+    document.getElementById('recStopSaveBtn')?.addEventListener('click', async () => {
+      if (state.recorder.status === 'idle') return;
+      state.recorder.uploading = true;
+      state.recorder.uploadProgress = 'Finalizando gravadores...';
+      if (state.recorder.timerId) {
+        clearInterval(state.recorder.timerId);
+        state.recorder.timerId = null;
+      }
+
+      const stopPromises = recRuntime.recorders.map((r) => {
+        if (r.mr.state !== 'inactive') r.mr.stop();
+        return r.stopPromise;
+      });
+      const finishedTracks = await Promise.all(stopPromises);
+      recRuntime.recorders = [];
+      state.recorder.status = 'idle';
+
+      try {
+        const title = (document.getElementById('recTitleInput')?.value || state.recorder.titleDraft || '').trim() || 'Gravação do Estúdio';
+        const sessRes = await fetch('/api/recordings/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            channel: chData.key,
+            title,
+            mode: state.recorder.mode,
+            scriptPath: state.recorder.linkedDocPath || '',
+          }),
+        });
+        const sessJson = await sessRes.json();
+        if (!sessRes.ok) throw new Error(sessJson.error || 'Erro ao criar take de gravação');
+
+        let wavInfo = '';
+        for (let i = 0; i < finishedTracks.length; i++) {
+          const item = finishedTracks[i];
+          if (!item.blob || item.blob.size === 0) continue;
+          state.recorder.uploadProgress = `Enviando faixa ${i + 1}/${finishedTracks.length} (${item.kind})...`;
+          renderRecorderView(container);
+
+          const upRes = await fetch(
+            `/api/recordings/track?channel=${encodeURIComponent(chData.key)}&sessionId=${encodeURIComponent(sessJson.sessionId)}&takeId=${encodeURIComponent(sessJson.takeId)}&kind=${encodeURIComponent(item.kind)}&ext=webm`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/octet-stream' },
+              body: item.blob,
+            }
+          );
+          const upJson = await upRes.json();
+          if (!upRes.ok) throw new Error(upJson.error || `Erro ao enviar faixa ${item.kind}`);
+          if (upJson.wavExtracted) wavInfo = ' + 04-voz.wav extraído automaticamente!';
+          if (upJson.state) state.data = normalizePayload(upJson.state);
+        }
+
+        state.recorder.lastSavedInfo = {
+          dirPath: sessJson.take?.dirPath || sessJson.session?.dirPath || '',
+          relDir: sessJson.take?.relDir || `${sessJson.session?.relDir}/${sessJson.takeId}`,
+          note: `${finishedTracks.length} faixa(s) salvas${wavInfo}`,
+        };
+        showToast(`Gravação salva em ${state.recorder.lastSavedInfo.relDir}!`);
+      } catch (err) {
+        showToast(err.message);
+      } finally {
+        state.recorder.uploading = false;
+        state.recorder.uploadProgress = '';
+        stopRecorderMediaStreams();
+        await loadRecordingsLibrary(chData.key, { rerender: false });
+        renderRecorderView(container);
+      }
+    });
+
+    document.getElementById('recCopyLastDirBtn')?.addEventListener('click', () => {
+      if (state.recorder.lastSavedInfo) {
+        copyText(state.recorder.lastSavedInfo.dirPath || state.recorder.lastSavedInfo.relDir, 'Pasta copiada!');
+      }
+    });
+
+    document.getElementById('recReloadLibBtn')?.addEventListener('click', () => loadRecordingsLibrary(chData.key));
+
+    document.getElementById('recScriptSel')?.addEventListener('change', (e) => {
+      state.recorder.linkedDocPath = e.target.value;
+      renderRecorderView(container);
+    });
+    document.getElementById('recPrompterFontMinus')?.addEventListener('click', () => {
+      state.recorder.prompterFontSize = Math.max(14, state.recorder.prompterFontSize - 2);
+      const box = document.getElementById('recPrompterBox');
+      const val = document.getElementById('recPrompterFontVal');
+      if (box) box.style.fontSize = `${state.recorder.prompterFontSize}px`;
+      if (val) val.textContent = `${state.recorder.prompterFontSize}px`;
+    });
+    document.getElementById('recPrompterFontPlus')?.addEventListener('click', () => {
+      state.recorder.prompterFontSize = Math.min(38, state.recorder.prompterFontSize + 2);
+      const box = document.getElementById('recPrompterBox');
+      const val = document.getElementById('recPrompterFontVal');
+      if (box) box.style.fontSize = `${state.recorder.prompterFontSize}px`;
+      if (val) val.textContent = `${state.recorder.prompterFontSize}px`;
+    });
+    document.getElementById('recPrompterSpeedRange')?.addEventListener('input', (e) => {
+      state.recorder.prompterSpeed = Number(e.target.value);
+    });
+    document.getElementById('recPrompterTopBtn')?.addEventListener('click', () => {
+      const box = document.getElementById('recPrompterBox');
+      if (box) box.scrollTop = 0;
+    });
+    document.getElementById('recPrompterPlayBtn')?.addEventListener('click', () => {
+      state.recorder.prompterPlaying = !state.recorder.prompterPlaying;
+      const btn = document.getElementById('recPrompterPlayBtn');
+      if (btn) btn.textContent = state.recorder.prompterPlaying ? '⏸ Pausar Teleprompter' : '▶ Play Teleprompter';
+      if (state.recorder.prompterPlaying) {
+        state.recorder.prompterLastTs = performance.now();
+        const step = (now) => {
+          const box = document.getElementById('recPrompterBox');
+          if (!state.recorder.prompterPlaying || !box || state.view !== 'recorder') return;
+          const dt = (now - state.recorder.prompterLastTs) / 1000;
+          state.recorder.prompterLastTs = now;
+          box.scrollTop += state.recorder.prompterSpeed * 26 * dt;
+          if (box.scrollTop + box.clientHeight >= box.scrollHeight - 2) {
+            state.recorder.prompterPlaying = false;
+            if (btn) btn.textContent = '▶ Play Teleprompter';
+            return;
+          }
+          state.recorder.prompterRafId = requestAnimationFrame(step);
+        };
+        state.recorder.prompterRafId = requestAnimationFrame(step);
+      } else if (state.recorder.prompterRafId) {
+        cancelAnimationFrame(state.recorder.prompterRafId);
+        state.recorder.prompterRafId = null;
+      }
+    });
+  }
+
+  /* =========================================================
+     VIEW 6C: NOTAS RÁPIDAS ESTILO GOOGLE KEEP (v4)
+  ========================================================= */
+  const KEEP_COLORS = [
+    { id: 'default', label: 'Padrão', dot: '#2e3148' },
+    { id: 'coral', label: 'Coral', dot: '#e11d48' },
+    { id: 'amber', label: 'Âmbar', dot: '#d97706' },
+    { id: 'yellow', label: 'Ouro', dot: '#ca8a04' },
+    { id: 'emerald', label: 'Esmeralda', dot: '#10b981' },
+    { id: 'teal', label: 'Ciano', dot: '#06b6d4' },
+    { id: 'indigo', label: 'Índigo', dot: '#6366f1' },
+    { id: 'purple', label: 'Roxo', dot: '#a855f7' },
+  ];
+
+  async function loadNotesForChannel(channelKey, { rerender = true } = {}) {
+    if (!state.serverMode) return;
+    state.notesState.loading = true;
+    try {
+      const res = await fetch(`/api/notes?channel=${encodeURIComponent(channelKey)}`, { cache: 'no-store' });
+      const json = await res.json();
+      if (res.ok) {
+        state.notesState.notes = Array.isArray(json.notes) ? json.notes : [];
+        state.notesState.gistSync = json.gistSync || null;
+        state.notesState.channel = channelKey;
+      }
+    } catch {
+      // ignora
+    } finally {
+      state.notesState.loading = false;
+      if (rerender && state.view === 'notes' && state.activeChannel === channelKey) {
+        renderNotesView(document.getElementById('viewContainer'));
+      }
+    }
+  }
+
+  function openNoteEditModal(note) {
+    const chData = getActiveChannelData();
+    const modal = document.getElementById('noteEditModal');
+    const body = document.getElementById('noteEditModalBody');
+    if (!modal || !body || !note) return;
+
+    let editColor = note.color || 'default';
+    let editKind = note.kind || 'note';
+    let editPinned = Boolean(note.pinned);
+    let editChecklist = Array.isArray(note.checklist)
+      ? note.checklist.map((it) => ({ ...it }))
+      : [];
+
+    const renderModalContent = () => {
+      body.innerHTML = `
+        <form id="noteEditForm" style="display:flex; flex-direction:column; gap:10px;">
+          <label>
+            <span>Título</span>
+            <input type="text" id="noteEditTitleInp" value="${MD.escapeHtml(note.title || '')}" placeholder="Título da nota...">
+          </label>
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+            <div class="mode-switch" id="noteEditKindSwitch">
+              <button type="button" class="${editKind === 'note' ? 'active' : ''}" data-nek="note">Texto</button>
+              <button type="button" class="${editKind === 'checklist' ? 'active' : ''}" data-nek="checklist">☑ Checklist</button>
+            </div>
+            <button type="button" class="btn-sm${editPinned ? ' btn-accent' : ''}" id="noteEditPinBtn">${editPinned ? '📌 Fixada' : '📌 Fixar'}</button>
+          </div>
+          ${editKind === 'checklist'
+            ? `<div style="display:flex; flex-direction:column; gap:6px;">
+                ${editChecklist
+                  .map(
+                    (it, idx) => `
+                      <div style="display:flex; align-items:center; gap:6px;">
+                        <input type="checkbox" data-ne-chk-done="${idx}"${it.done ? ' checked' : ''} style="width:auto;">
+                        <input type="text" data-ne-chk-text="${idx}" value="${MD.escapeHtml(it.text || '')}" placeholder="Item da lista..." style="flex:1;">
+                        <button type="button" class="btn-sm btn-danger" data-ne-chk-del="${idx}">✕</button>
+                      </div>
+                    `
+                  )
+                  .join('')}
+                <div><button type="button" class="btn-sm" id="noteEditAddChkBtn">+ Adicionar item</button></div>
+              </div>`
+            : `<label>
+                <span>Conteúdo</span>
+                <textarea id="noteEditContentInp" rows="5" placeholder="Escreva sua ideia, gancho ou anotação...">${MD.escapeHtml(note.content || '')}</textarea>
+              </label>`}
+          <div class="form-row-2">
+            <label>
+              <span>Tags / Labels (vírgula)</span>
+              <input type="text" id="noteEditLabelsInp" value="${MD.escapeHtml((note.labels || []).join(', '))}" placeholder="gancho, urgente, ideia">
+            </label>
+            <label>
+              <span>Link opcional</span>
+              <input type="url" id="noteEditUrlInp" value="${MD.escapeHtml(note.linkedUrl || '')}" placeholder="https://...">
+            </label>
+          </div>
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+            <div class="keep-color-dots">
+              ${KEEP_COLORS.map(
+                (c) => `<button type="button" class="keep-color-dot${editColor === c.id ? ' is-active' : ''}" data-ne-color="${c.id}" style="background:${c.dot};" title="${MD.escapeHtml(c.label)}"></button>`
+              ).join('')}
+            </div>
+            <div style="display:flex; gap:8px;">
+              <button type="button" class="btn-ghost" data-close-modal="noteEditModal">Cancelar</button>
+              <button type="submit" class="btn-primary">Salvar Nota</button>
+            </div>
+          </div>
+        </form>
+      `;
+
+      body.querySelectorAll('[data-close-modal]').forEach((b) => {
+        b.onclick = () => modal.classList.add('hidden');
+      });
+      body.querySelectorAll('#noteEditKindSwitch button').forEach((b) => {
+        b.onclick = () => {
+          editKind = b.dataset.nek;
+          if (editKind === 'checklist' && !editChecklist.length) {
+            editChecklist = [{ id: `c-${Date.now()}`, text: '', done: false }];
+          }
+          renderModalContent();
+        };
+      });
+      document.getElementById('noteEditPinBtn').onclick = () => {
+        editPinned = !editPinned;
+        renderModalContent();
+      };
+      body.querySelectorAll('[data-ne-color]').forEach((b) => {
+        b.onclick = () => {
+          editColor = b.dataset.neColor;
+          renderModalContent();
+        };
+      });
+      body.querySelectorAll('[data-ne-chk-done]').forEach((chk) => {
+        chk.onchange = () => {
+          editChecklist[Number(chk.dataset.neChkDone)].done = chk.checked;
+        };
+      });
+      body.querySelectorAll('[data-ne-chk-text]').forEach((inp) => {
+        inp.oninput = () => {
+          editChecklist[Number(inp.dataset.neChkText)].text = inp.value;
+        };
+      });
+      body.querySelectorAll('[data-ne-chk-del]').forEach((b) => {
+        b.onclick = () => {
+          editChecklist.splice(Number(b.dataset.neChkDel), 1);
+          renderModalContent();
+        };
+      });
+      document.getElementById('noteEditAddChkBtn')?.addEventListener('click', () => {
+        editChecklist.push({ id: `c-${Date.now()}`, text: '', done: false });
+        renderModalContent();
+      });
+
+      document.getElementById('noteEditForm').onsubmit = async (e) => {
+        e.preventDefault();
+        const title = document.getElementById('noteEditTitleInp')?.value || '';
+        const content = document.getElementById('noteEditContentInp')?.value ?? note.content ?? '';
+        const labels = document.getElementById('noteEditLabelsInp')?.value || '';
+        const linkedUrl = document.getElementById('noteEditUrlInp')?.value.trim() || '';
+        const cleanChecklist = editChecklist.filter((it) => it.text.trim());
+
+        try {
+          const res = await fetch('/api/notes', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              channel: chData.key,
+              id: note.id,
+              title,
+              content: editKind === 'note' ? content : '',
+              kind: editKind,
+              checklist: editKind === 'checklist' ? cleanChecklist : [],
+              color: editColor,
+              pinned: editPinned,
+              labels,
+              linkedUrl,
+            }),
+          });
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || 'Erro ao atualizar nota');
+          state.notesState.notes = json.notes || [];
+          state.notesState.gistSync = json.gistSync || state.notesState.gistSync;
+          if (json.state) state.data = normalizePayload(json.state);
+          modal.classList.add('hidden');
+          renderNotesView(document.getElementById('viewContainer'));
+          showToast('Nota atualizada!');
+        } catch (err) {
+          showToast(err.message);
+        }
+      };
+    };
+
+    renderModalContent();
+    modal.classList.remove('hidden');
+  }
+
+  function renderNotesView(container) {
+    if (!container) return;
+    const chData = getActiveChannelData();
+    const ns = state.notesState;
+
+    if (state.serverMode && ns.channel !== chData.key && !ns.loading) {
+      loadNotesForChannel(chData.key, { rerender: true });
+    }
+
+    const allNotes = ns.notes || [];
+    const labelsSet = new Set();
+    for (const n of allNotes) {
+      for (const l of n.labels || []) labelsSet.add(l);
+    }
+
+    const filterNote = (n) => {
+      if (!ns.showArchived && n.archived) return false;
+      if (ns.showArchived && !n.archived) return false;
+      if (ns.colorFilter !== 'all' && (n.color || 'default') !== ns.colorFilter) return false;
+      if (ns.labelFilter !== 'all' && !(n.labels || []).includes(ns.labelFilter)) return false;
+      if (ns.search) {
+        const q = ns.search.toLowerCase();
+        const chkTxt = (n.checklist || []).map((c) => c.text).join(' ');
+        const hay = `${n.title} ${n.content} ${chkTxt} ${(n.labels || []).join(' ')} ${n.linkedUrl || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    };
+
+    const visibleNotes = allNotes.filter(filterNote);
+    const pinnedNotes = visibleNotes.filter((n) => n.pinned);
+    const otherNotes = visibleNotes.filter((n) => !n.pinned);
+
+    const renderKeepCard = (n) => {
+      const colorClass = `kc-${KEEP_COLORS.some((c) => c.id === n.color) ? n.color : 'default'}`;
+      const checklistHtml = (n.checklist || []).length
+        ? `<div class="keep-checklist">
+            ${(n.checklist || [])
+              .map(
+                (it) => `
+                  <label class="keep-check-item${it.done ? ' is-done' : ''}">
+                    <input type="checkbox" data-note-chk="${MD.escapeHtml(n.id)}::${MD.escapeHtml(it.id)}"${it.done ? ' checked' : ''}>
+                    <span>${MD.escapeHtml(it.text)}</span>
+                  </label>
+                `
+              )
+              .join('')}
+          </div>`
+        : '';
+
+      return `
+        <article class="keep-card ${colorClass}">
+          <div class="keep-card-head">
+            <h3 class="keep-card-title">${MD.escapeHtml(n.title || (n.kind === 'checklist' ? 'Checklist' : 'Nota'))}</h3>
+            <button type="button" class="btn-sm${n.pinned ? ' btn-accent' : ''}" data-note-pin="${MD.escapeHtml(n.id)}" title="${n.pinned ? 'Desafixar' : 'Fixar no topo'}">📌</button>
+          </div>
+          ${n.content ? `<p class="keep-card-body">${MD.escapeHtml(n.content)}</p>` : ''}
+          ${checklistHtml}
+          ${(n.labels || []).length
+            ? `<div class="cat-chip-row">${n.labels.map((l) => `<span class="cat-tag-chip" style="padding:1px 7px; font-size:10.5px;">#${MD.escapeHtml(l)}</span>`).join('')}</div>`
+            : ''}
+          ${n.linkedUrl
+            ? `<a href="${MD.escapeHtml(n.linkedUrl)}" target="_blank" rel="noopener noreferrer" data-ext-url="${MD.escapeHtml(n.linkedUrl)}" data-ext-title="${MD.escapeHtml(n.title || n.linkedUrl)}" style="font-family:var(--font-mono); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">🔗 ${MD.escapeHtml(n.linkedUrl)}</a>`
+            : ''}
+          ${n.linkedDocPath
+            ? `<div><button type="button" class="kc-move-btn" data-open-doc="${MD.escapeHtml(n.linkedDocPath)}">📄 ${MD.escapeHtml(n.linkedDocPath)}</button></div>`
+            : ''}
+
+          <div class="keep-card-actions">
+            <div class="keep-color-dots">
+              ${KEEP_COLORS.map(
+                (c) => `<button type="button" class="keep-color-dot${(n.color || 'default') === c.id ? ' is-active' : ''}" data-note-color="${MD.escapeHtml(n.id)}::${c.id}" style="width:14px; height:14px; background:${c.dot};" title="${MD.escapeHtml(c.label)}"></button>`
+              ).join('')}
+            </div>
+            <div style="display:flex; gap:5px; flex-wrap:wrap;">
+              <button type="button" class="btn-sm" data-note-edit="${MD.escapeHtml(n.id)}">✎ Editar</button>
+              <button type="button" class="btn-sm btn-accent" data-note-todoc="${MD.escapeHtml(n.id)}::roteiro" title="Transformar em Roteiro (.md)">→ Roteiro</button>
+              <button type="button" class="btn-sm" data-note-todoc="${MD.escapeHtml(n.id)}::ideia" title="Transformar em Ideia (.md)">→ Ideia</button>
+              <button type="button" class="btn-sm" data-note-archive="${MD.escapeHtml(n.id)}" title="${n.archived ? 'Restaurar' : 'Arquivar'}">${n.archived ? '↩' : '📦'}</button>
+              <button type="button" class="btn-sm btn-danger" data-note-del="${MD.escapeHtml(n.id)}" title="Excluir nota">✕</button>
+            </div>
+          </div>
+        </article>
+      `;
+    };
+
+    const gs = ns.gistSync || {};
+    const gistHintBox = gs.lastError
+      ? `<div class="settings-toggle-row" style="margin-bottom:14px; border-color:rgba(245,185,66,0.35); background:rgba(245,185,66,0.08); font-size:12px;">
+          <div>
+            <strong style="color:#ffd479;">Sync Gist Privado:</strong> ${MD.escapeHtml(gs.lastError)}
+            ${gs.lastHint ? `<div style="font-size:11px; color:var(--text-2); margin-top:2px;">💡 ${MD.escapeHtml(gs.lastHint)}</div>` : ''}
+          </div>
+        </div>`
+      : gs.gistUrl
+      ? `<div class="settings-toggle-row" style="margin-bottom:14px; border-color:rgba(54,211,153,0.32); background:rgba(54,211,153,0.07); font-size:12px;">
+          <div>
+            <strong style="color:#86efac;">☁️ Gist Privado sincronizado</strong>
+            ${gs.lastSyncedAt ? `<span style="color:var(--text-3); margin-left:6px;">(${formatDatePt(gs.lastSyncedAt)})</span>` : ''}
+          </div>
+          <a class="btn-sm" href="${MD.escapeHtml(gs.gistUrl)}" target="_blank" rel="noopener noreferrer">Abrir Gist Privado ↗</a>
+        </div>`
+      : '';
+
+    container.innerHTML = `
+      <div class="keep-toolbar">
+        <div class="cat-toolbar-group">
+          <input type="search" class="search-box-sm" id="keepSearchInput" placeholder="Buscar notas, checklists ou tags..." value="${MD.escapeHtml(ns.search)}" style="width:220px; margin:0; height:32px;">
+          <select class="select-dark" id="keepColorFilterSel">
+            <option value="all"${ns.colorFilter === 'all' ? ' selected' : ''}>Todas as cores</option>
+            ${KEEP_COLORS.map((c) => `<option value="${c.id}"${ns.colorFilter === c.id ? ' selected' : ''}>${MD.escapeHtml(c.label)}</option>`).join('')}
+          </select>
+          <select class="select-dark" id="keepLabelFilterSel">
+            <option value="all"${ns.labelFilter === 'all' ? ' selected' : ''}>Todas as tags</option>
+            ${Array.from(labelsSet).sort().map((l) => `<option value="${MD.escapeHtml(l)}"${ns.labelFilter === l ? ' selected' : ''}>#${MD.escapeHtml(l)}</option>`).join('')}
+          </select>
+          <button type="button" class="btn-sm${ns.showArchived ? ' btn-accent' : ''}" id="keepToggleArchivedBtn">${ns.showArchived ? '📦 Vendo Arquivadas' : '📦 Mostrar Arquivadas'}</button>
+        </div>
+
+        <div class="cat-toolbar-group">
+          <button type="button" class="btn-sm btn-accent" id="keepSyncGistBtn">☁️ Sync Gist Privado</button>
+          <button type="button" class="btn-sm" data-keep-export="json">⤓ Exportar JSON</button>
+          <button type="button" class="btn-sm" data-keep-export="md">⤓ MD</button>
+          <button type="button" class="btn-sm" data-keep-export="txt">⤓ TXT</button>
+          <button type="button" class="btn-sm" id="keepImportBtn">⤒ Importar JSON</button>
+          <input type="file" id="keepImportFileInput" accept=".json,application/json" hidden>
+        </div>
+      </div>
+
+      ${gistHintBox}
+
+      <section class="keep-composer${ns.composerColor !== 'default' ? ` kc-${ns.composerColor}` : ''}" id="keepComposerBox">
+        ${ns.composerExpanded
+          ? `
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+              <input type="text" class="keep-composer-title" id="keepCompTitle" placeholder="Título da nota..." value="${MD.escapeHtml(ns.compTitleDraft || '')}">
+              <button type="button" class="btn-sm${ns.composerPinned ? ' btn-accent' : ''}" id="keepCompPinBtn" title="Fixar nota">📌</button>
+            </div>
+            ${ns.composerKind === 'checklist'
+              ? `<div style="display:flex; flex-direction:column; gap:6px;">
+                  ${(ns.composerChecklist || [])
+                    .map(
+                      (it, idx) => `
+                        <div style="display:flex; align-items:center; gap:6px;">
+                          <input type="checkbox" data-comp-chk-done="${idx}"${it.done ? ' checked' : ''} style="width:auto;">
+                          <input type="text" data-comp-chk-text="${idx}" placeholder="Item da checklist..." value="${MD.escapeHtml(it.text || '')}" style="flex:1; border-bottom:1px solid var(--border-soft); padding:4px 0;">
+                          <button type="button" class="btn-sm" data-comp-chk-del="${idx}">✕</button>
+                        </div>
+                      `
+                    )
+                    .join('')}
+                  <div><button type="button" class="btn-sm" id="keepCompAddChkBtn">+ Adicionar item</button></div>
+                </div>`
+              : `<textarea id="keepCompBody" rows="3" placeholder="Escreva sua ideia, gancho ou anotação rápida...">${MD.escapeHtml(ns.compBodyDraft || '')}</textarea>`}
+            <div class="form-row-2">
+              <input type="text" id="keepCompLabels" placeholder="Tags separadas por vírgula (ex.: shorts, pauta)" value="${MD.escapeHtml(ns.compLabelsDraft || '')}" style="border-bottom:1px solid var(--border-soft); padding:5px 0; font-size:12px;">
+              <input type="url" id="keepCompUrl" placeholder="Link opcional (https://...)" value="${MD.escapeHtml(ns.compUrlDraft || '')}" style="border-bottom:1px solid var(--border-soft); padding:5px 0; font-size:12px;">
+            </div>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; padding-top:4px; border-top:1px solid var(--border-soft);">
+              <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <button type="button" class="btn-sm" id="keepCompToggleKindBtn">${ns.composerKind === 'checklist' ? '✎ Modo Texto' : '☑ Modo Checklist'}</button>
+                <div class="keep-color-dots">
+                  ${KEEP_COLORS.map(
+                    (c) => `<button type="button" class="keep-color-dot${ns.composerColor === c.id ? ' is-active' : ''}" data-comp-color="${c.id}" style="background:${c.dot};" title="${MD.escapeHtml(c.label)}"></button>`
+                  ).join('')}
+                </div>
+              </div>
+              <div style="display:flex; gap:8px;">
+                <button type="button" class="btn-sm" id="keepCompCloseBtn">Fechar</button>
+                <button type="button" class="btn-sm btn-accent" id="keepCompSaveBtn">Salvar Nota</button>
+              </div>
+            </div>
+          `
+          : `
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+              <button type="button" id="keepCompExpandBtn" style="flex:1; text-align:left; font-size:13.5px; color:var(--text-2); padding:4px 2px;">Criar uma nota...</button>
+              <button type="button" class="btn-sm" id="keepCompQuickChecklistBtn">☑ Nova Checklist</button>
+            </div>
+          `}
+      </section>
+
+      ${!state.serverMode
+        ? '<div class="glass-card"><p style="margin:0; color:var(--text-3);">As Notas estilo Keep e Sync Gist Privado funcionam com o servidor local ativo.</p></div>'
+        : visibleNotes.length === 0
+        ? `<div class="glass-card"><p style="margin:0; color:var(--text-3);">${ns.showArchived ? 'Nenhuma nota arquivada.' : 'Nenhuma nota encontrada. Crie uma nota acima!'}</p></div>`
+        : ns.showArchived
+        ? `<div class="keep-section-label">ARQUIVADAS (${visibleNotes.length})</div><div class="keep-grid">${visibleNotes.map(renderKeepCard).join('')}</div>`
+        : `
+          ${pinnedNotes.length ? `<div class="keep-section-label">FIXADAS (${pinnedNotes.length})</div><div class="keep-grid">${pinnedNotes.map(renderKeepCard).join('')}</div>` : ''}
+          ${otherNotes.length ? `<div class="keep-section-label">${pinnedNotes.length ? 'OUTRAS' : 'NOTAS'} (${otherNotes.length})</div><div class="keep-grid">${otherNotes.map(renderKeepCard).join('')}</div>` : ''}
+        `}
+    `;
+
+    const searchInp = document.getElementById('keepSearchInput');
+    if (searchInp) {
+      searchInp.oninput = () => {
+        ns.search = searchInp.value;
+        const pos = searchInp.selectionStart;
+        renderNotesView(container);
+        const again = document.getElementById('keepSearchInput');
+        if (again) {
+          again.focus();
+          again.setSelectionRange(pos, pos);
+        }
+      };
+    }
+    document.getElementById('keepColorFilterSel')?.addEventListener('change', (e) => {
+      ns.colorFilter = e.target.value;
+      renderNotesView(container);
+    });
+    document.getElementById('keepLabelFilterSel')?.addEventListener('change', (e) => {
+      ns.labelFilter = e.target.value;
+      renderNotesView(container);
+    });
+    document.getElementById('keepToggleArchivedBtn')?.addEventListener('click', () => {
+      ns.showArchived = !ns.showArchived;
+      renderNotesView(container);
+    });
+
+    document.getElementById('keepSyncGistBtn')?.addEventListener('click', async () => {
+      if (!state.serverMode) return showToast('Requer servidor local ativo.');
+      showToast('Sincronizando com Gist privado...');
+      try {
+        const res = await fetch('/api/notes/sync-gist', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ channel: chData.key, mode: 'sync' }),
+        });
+        const json = await res.json();
+        ns.notes = json.notes || ns.notes;
+        ns.gistSync = { ...(json.gistSync || {}), lastHint: json.hint || '' };
+        if (json.state) state.data = normalizePayload(json.state);
+        renderNotesView(container);
+        if (json.ok) {
+          showToast('Notas sincronizadas no GitHub Gist privado!');
+        } else {
+          showToast(json.error || 'Falha no sync Gist.');
+        }
+      } catch (err) {
+        showToast(err.message);
+      }
+    });
+
+    container.querySelectorAll('[data-keep-export]').forEach((btn) => {
+      btn.onclick = () => {
+        if (!state.serverMode) return showToast('Requer servidor local ativo.');
+        const fmt = btn.dataset.keepExport;
+        global.open(`/api/notes/export?channel=${encodeURIComponent(chData.key)}&format=${encodeURIComponent(fmt)}`, '_blank', 'noopener');
+      };
+    });
+
+    const importFileInp = document.getElementById('keepImportFileInput');
+    document.getElementById('keepImportBtn')?.addEventListener('click', () => importFileInp?.click());
+    importFileInp?.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        const notesPayload = Array.isArray(parsed) ? parsed : parsed.notes;
+        const res = await fetch('/api/notes/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ channel: chData.key, notes: notesPayload, mode: 'merge' }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'Erro ao importar JSON');
+        ns.notes = json.notes || [];
+        if (json.state) state.data = normalizePayload(json.state);
+        renderNotesView(container);
+        showToast(`${json.importedCount || 0} nota(s) importada(s)!`);
+      } catch (err) {
+        showToast(`Erro na importação: ${err.message}`);
+      } finally {
+        e.target.value = '';
+      }
+    });
+
+    document.getElementById('keepCompExpandBtn')?.addEventListener('click', () => {
+      ns.composerExpanded = true;
+      ns.composerKind = 'note';
+      renderNotesView(container);
+      document.getElementById('keepCompTitle')?.focus();
+    });
+    document.getElementById('keepCompQuickChecklistBtn')?.addEventListener('click', () => {
+      ns.composerExpanded = true;
+      ns.composerKind = 'checklist';
+      if (!ns.composerChecklist?.length) ns.composerChecklist = [{ id: 'c1', text: '', done: false }];
+      renderNotesView(container);
+    });
+    document.getElementById('keepCompPinBtn')?.addEventListener('click', () => {
+      ns.composerPinned = !ns.composerPinned;
+      renderNotesView(container);
+    });
+    document.getElementById('keepCompToggleKindBtn')?.addEventListener('click', () => {
+      ns.composerKind = ns.composerKind === 'checklist' ? 'note' : 'checklist';
+      if (ns.composerKind === 'checklist' && !ns.composerChecklist?.length) {
+        ns.composerChecklist = [{ id: 'c1', text: '', done: false }];
+      }
+      renderNotesView(container);
+    });
+    document.getElementById('keepCompCloseBtn')?.addEventListener('click', () => {
+      ns.composerExpanded = false;
+      renderNotesView(container);
+    });
+    document.getElementById('keepCompTitle')?.addEventListener('input', (e) => { ns.compTitleDraft = e.target.value; });
+    document.getElementById('keepCompBody')?.addEventListener('input', (e) => { ns.compBodyDraft = e.target.value; });
+    document.getElementById('keepCompLabels')?.addEventListener('input', (e) => { ns.compLabelsDraft = e.target.value; });
+    document.getElementById('keepCompUrl')?.addEventListener('input', (e) => { ns.compUrlDraft = e.target.value; });
+
+    container.querySelectorAll('[data-comp-color]').forEach((btn) => {
+      btn.onclick = () => {
+        ns.composerColor = btn.dataset.compColor;
+        renderNotesView(container);
+      };
+    });
+    container.querySelectorAll('[data-comp-chk-done]').forEach((chk) => {
+      chk.onchange = () => {
+        ns.composerChecklist[Number(chk.dataset.compChkDone)].done = chk.checked;
+      };
+    });
+    container.querySelectorAll('[data-comp-chk-text]').forEach((inp) => {
+      inp.oninput = () => {
+        ns.composerChecklist[Number(inp.dataset.compChkText)].text = inp.value;
+      };
+      inp.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          ns.composerChecklist.push({ id: `c-${Date.now()}`, text: '', done: false });
+          renderNotesView(container);
+        }
+      };
+    });
+    container.querySelectorAll('[data-comp-chk-del]').forEach((btn) => {
+      btn.onclick = () => {
+        ns.composerChecklist.splice(Number(btn.dataset.compChkDel), 1);
+        renderNotesView(container);
+      };
+    });
+    document.getElementById('keepCompAddChkBtn')?.addEventListener('click', () => {
+      ns.composerChecklist.push({ id: `c-${Date.now()}`, text: '', done: false });
+      renderNotesView(container);
+    });
+
+    document.getElementById('keepCompSaveBtn')?.addEventListener('click', async () => {
+      if (!state.serverMode) return showToast('Requer servidor local ativo.');
+      const title = (ns.compTitleDraft || '').trim();
+      const content = (ns.compBodyDraft || '').trim();
+      const cleanChecklist = (ns.composerChecklist || []).filter((it) => it.text.trim());
+      if (!title && !content && !cleanChecklist.length) {
+        showToast('Digite um título, texto ou item de checklist.');
+        return;
+      }
+      try {
+        const res = await fetch('/api/notes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            channel: chData.key,
+            title,
+            content: ns.composerKind === 'note' ? content : '',
+            kind: ns.composerKind,
+            checklist: ns.composerKind === 'checklist' ? cleanChecklist : [],
+            color: ns.composerColor,
+            pinned: ns.composerPinned,
+            labels: ns.compLabelsDraft || '',
+            linkedUrl: ns.compUrlDraft || '',
+          }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'Erro ao salvar nota');
+        ns.notes = json.notes || [];
+        ns.gistSync = json.gistSync || ns.gistSync;
+        if (json.state) state.data = normalizePayload(json.state);
+        ns.composerExpanded = false;
+        ns.compTitleDraft = '';
+        ns.compBodyDraft = '';
+        ns.compLabelsDraft = '';
+        ns.compUrlDraft = '';
+        ns.composerPinned = false;
+        ns.composerColor = 'default';
+        ns.composerChecklist = [{ id: 'c1', text: '', done: false }];
+        renderNotesView(container);
+        showToast('Nota criada!');
+      } catch (err) {
+        showToast(err.message);
+      }
+    });
+
+    const patchNote = async (noteId, patch, toastMsg = '') => {
+      if (!state.serverMode) return;
+      try {
+        const res = await fetch('/api/notes', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ channel: chData.key, id: noteId, ...patch }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'Erro ao atualizar nota');
+        ns.notes = json.notes || [];
+        if (json.state) state.data = normalizePayload(json.state);
+        renderNotesView(container);
+        if (toastMsg) showToast(toastMsg);
+      } catch (err) {
+        showToast(err.message);
+      }
+    };
+
+    container.querySelectorAll('[data-note-pin]').forEach((btn) => {
+      btn.onclick = () => {
+        const note = allNotes.find((x) => x.id === btn.dataset.notePin);
+        if (note) patchNote(note.id, { pinned: !note.pinned });
+      };
+    });
+    container.querySelectorAll('[data-note-color]').forEach((btn) => {
+      btn.onclick = () => {
+        const [noteId, color] = btn.dataset.noteColor.split('::');
+        patchNote(noteId, { color });
+      };
+    });
+    container.querySelectorAll('[data-note-chk]').forEach((chk) => {
+      chk.onchange = () => {
+        const [noteId, itemId] = chk.dataset.noteChk.split('::');
+        const note = allNotes.find((x) => x.id === noteId);
+        if (!note) return;
+        const nextList = (note.checklist || []).map((it) => (it.id === itemId ? { ...it, done: chk.checked } : it));
+        patchNote(noteId, { checklist: nextList });
+      };
+    });
+    container.querySelectorAll('[data-note-edit]').forEach((btn) => {
+      btn.onclick = () => {
+        const note = allNotes.find((x) => x.id === btn.dataset.noteEdit);
+        if (note) openNoteEditModal(note);
+      };
+    });
+    container.querySelectorAll('[data-note-archive]').forEach((btn) => {
+      btn.onclick = () => {
+        const note = allNotes.find((x) => x.id === btn.dataset.noteArchive);
+        if (note) patchNote(note.id, { archived: !note.archived }, note.archived ? 'Nota restaurada!' : 'Nota arquivada.');
+      };
+    });
+    container.querySelectorAll('[data-note-del]').forEach((btn) => {
+      btn.onclick = async () => {
+        if (!confirm('Excluir esta nota permanentemente?')) return;
+        try {
+          const res = await fetch(`/api/notes?channel=${encodeURIComponent(chData.key)}&id=${encodeURIComponent(btn.dataset.noteDel)}`, {
+            method: 'DELETE',
+          });
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || 'Erro ao excluir nota');
+          ns.notes = json.notes || [];
+          if (json.state) state.data = normalizePayload(json.state);
+          renderNotesView(container);
+          showToast('Nota excluída.');
+        } catch (err) {
+          showToast(err.message);
+        }
+      };
+    });
+    container.querySelectorAll('[data-note-todoc]').forEach((btn) => {
+      btn.onclick = async () => {
+        const [noteId, targetType] = btn.dataset.noteTodoc.split('::');
+        try {
+          const res = await fetch('/api/notes/to-doc', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ channel: chData.key, noteId, targetType }),
+          });
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || 'Erro ao converter nota em .md');
+          if (json.state) state.data = normalizePayload(json.state);
+          showToast(`Criado ${json.docPath}!`);
+          setView('scripts', json.docPath);
+        } catch (err) {
+          showToast(err.message);
+        }
+      };
+    });
+    container.querySelectorAll('[data-open-doc]').forEach((btn) => {
+      btn.onclick = () => setView('scripts', btn.dataset.openDoc);
+    });
+  }
+
+  /* =========================================================
      VIEW 7: CENTRAL DO AGENTE & ÁRVORE DE ARQUIVOS
   ========================================================= */
   function renderAgentView(container) {
@@ -6830,17 +10083,67 @@
   }
 
   /* =========================================================
-     VIEW 8: CONFIGURAÇÕES DO WORKSPACE
+     VIEW 8: CONFIGURAÇÕES DO WORKSPACE + ACESSO REMOTO (v4)
   ========================================================= */
+  function updateRemoteChip() {
+    const chip = document.getElementById('remoteLiveChip');
+    const offChip = document.getElementById('remoteNgrokOffChip');
+    if (!chip) return;
+    const rs = state.remoteStatus;
+    if (!state.serverMode || !rs || (!rs.lanEnabled && !rs.ngrokActive)) {
+      chip.classList.add('hidden');
+      chip.innerHTML = '';
+      if (offChip) offChip.classList.add('hidden');
+      return;
+    }
+
+    const parts = [];
+    if (rs.lanEnabled) parts.push('Wi-Fi LAN');
+    if (rs.ngrokActive) parts.push('ngrok ON');
+    chip.classList.remove('hidden');
+    chip.classList.toggle('is-remote-on', Boolean(rs.lanEnabled && !rs.ngrokActive));
+    chip.classList.toggle('is-remote-ngrok', Boolean(rs.ngrokActive));
+    chip.innerHTML = `<span class="remote-live-dot"></span><span>${MD.escapeHtml(parts.join(' • '))}${rs.pinEnabled && rs.pinConfigured ? ' 🔒' : ''}</span>`;
+    chip.title = [rs.lanUrl ? `LAN: ${rs.lanUrl}` : '', rs.ngrokUrl ? `ngrok: ${rs.ngrokUrl}` : ''].filter(Boolean).join(' | ');
+
+    if (offChip) {
+      offChip.classList.toggle('hidden', !rs.ngrokActive);
+    }
+  }
+
+  async function loadRemoteStatus({ quiet = false, rerender = false } = {}) {
+    if (!state.serverMode) return null;
+    if (!quiet) state.remoteLoading = true;
+    try {
+      const res = await fetch('/api/remote/status', { cache: 'no-store' });
+      const json = await res.json();
+      if (res.ok) {
+        state.remoteStatus = json;
+        updateRemoteChip();
+      }
+      return state.remoteStatus;
+    } catch {
+      return null;
+    } finally {
+      state.remoteLoading = false;
+      if (rerender && state.view === 'settings') {
+        renderSettingsView(document.getElementById('viewContainer'));
+      }
+    }
+  }
+
   async function loadSettingsConfig({ force = false } = {}) {
     if (!state.serverMode) return null;
     if (!force && state.settingsLoading) return state.settingsConfig;
     state.settingsLoading = true;
     state.settingsError = null;
     try {
-      const res = await fetch('/api/config', { cache: 'no-store' });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Erro ao carregar configurações');
+      const [cfgRes] = await Promise.all([
+        fetch('/api/config', { cache: 'no-store' }),
+        loadRemoteStatus({ quiet: true, rerender: false }),
+      ]);
+      const json = await cfgRes.json();
+      if (!cfgRes.ok) throw new Error(json.error || 'Erro ao carregar configurações');
       state.settingsConfig = json.config;
       if (!state.settingsChannelKey || !state.settingsConfig?.channels?.[state.settingsChannelKey]) {
         state.settingsChannelKey = state.settingsConfig?.channels?.[state.activeChannel]
@@ -6967,6 +10270,23 @@
         `;
       })
       .join('');
+
+    if (!state.remoteStatus && !state.remoteLoading) {
+      loadRemoteStatus({ quiet: false, rerender: true });
+    }
+    const rs = state.remoteStatus || {};
+    const lanInfo = rs.lan || {};
+    const ngrokInfo = rs.ngrok || {};
+    const pinInfo = rs.pin || {};
+    const lanEnabled = Boolean(rs.lanEnabled ?? lanInfo.enabled);
+    const lanUrl = rs.lanUrl || lanInfo.url || '';
+    const lanQrSvg = rs.lanQrSvg || lanInfo.qrSvg || '';
+    const ngrokActive = Boolean(rs.ngrokActive ?? ngrokInfo.active);
+    const ngrokUrl = rs.ngrokUrl || ngrokInfo.url || '';
+    const ngrokQrSvg = rs.ngrokQrSvg || ngrokInfo.qrSvg || '';
+    const hasNgrokToken = Boolean(rs.hasNgrokAuthtoken ?? ngrokInfo.hasAuthtoken);
+    const pinEnabled = Boolean(rs.pinEnabled ?? pinInfo.enabled);
+    const pinConfigured = Boolean(rs.pinConfigured ?? pinInfo.configured);
 
     container.innerHTML = `
       <section class="settings-layout">
@@ -7210,6 +10530,92 @@
             <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:4px;">
               <button type="button" class="btn-sm" id="settingsSyncWorkspaceBtn">↻ Sync Workspace</button>
               <button type="button" class="btn-sm" id="settingsSyncRssBtn">↻ Sync RSS (${MD.escapeHtml(selectedKey)})</button>
+            </div>
+          </div>
+
+          <!-- Card 5: Acesso Remoto (Wi-Fi Local, ngrok & QR Code) -->
+          <div class="settings-card remote-card" id="settingsRemoteCard">
+            <div class="settings-card-head">
+              <h3>5. Acesso Remoto (Wi-Fi Local, ngrok & QR Code)</h3>
+              <button type="button" class="btn-sm" id="remoteRefreshBtn">↻ Atualizar Status</button>
+            </div>
+
+            <div class="remote-blocks-grid">
+              <!-- Bloco Wi-Fi Local -->
+              <div class="remote-block">
+                <div class="remote-block-head">
+                  <strong style="font-size:13.5px;">📶 Wi-Fi Local (Rede Interna)</strong>
+                  <span class="settings-path-badge ${lanEnabled ? 'is-ok' : 'is-miss'}">${lanEnabled ? 'Ativo' : 'Desligado'}</span>
+                </div>
+                <p style="margin:0; font-size:12px; color:var(--text-2); line-height:1.45;">
+                  O celular precisa estar conectado na <strong>mesma rede Wi-Fi</strong> deste computador.
+                </p>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                  <button type="button" class="btn-sm ${lanEnabled ? 'btn-danger' : 'btn-accent'}" id="remoteLanToggleBtn">
+                    ${lanEnabled ? '⏹ Desligar Wi-Fi LAN' : '▶ Ligar Wi-Fi LAN'}
+                  </button>
+                </div>
+                ${lanInfo.error ? `<div style="font-size:11.5px; color:var(--danger);">${MD.escapeHtml(lanInfo.error)}</div>` : ''}
+                ${lanEnabled && lanUrl
+                  ? `
+                    <div class="remote-url-box">
+                      <a href="${MD.escapeHtml(lanUrl)}" target="_blank" rel="noopener noreferrer">${MD.escapeHtml(lanUrl)}</a>
+                      <button type="button" class="kc-move-btn" id="remoteCopyLanBtn">Copiar</button>
+                    </div>
+                    ${lanQrSvg ? `<div class="remote-qr-box" id="remoteLanQrBox" aria-label="QR Code Wi-Fi LAN">${lanQrSvg}</div>` : ''}
+                  `
+                  : '<div style="font-size:11.5px; color:var(--text-3);">Ative para gerar o link local e o QR Code escaneável no celular.</div>'}
+              </div>
+
+              <!-- Bloco Túnel Público (ngrok) -->
+              <div class="remote-block">
+                <div class="remote-block-head">
+                  <strong style="font-size:13.5px;">🌐 Túnel Público (ngrok)</strong>
+                  <span class="settings-path-badge ${ngrokActive ? 'is-ok' : 'is-miss'}">${ngrokActive ? 'Túnel ON' : 'Desligado'}</span>
+                </div>
+                <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-2);">
+                  <span>Authtoken ngrok (opcional)</span>
+                  <input type="password" id="remoteNgrokTokenInput" autocomplete="off" placeholder="${hasNgrokToken ? 'Authtoken configurado (preencha só para alterar)' : 'Cole seu Authtoken do ngrok.com'}" style="width:100%; box-sizing:border-box; padding:8px 10px; border-radius:8px; background:var(--bg-input); border:1px solid var(--border); font-size:12px;">
+                </label>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                  ${ngrokActive
+                    ? `<button type="button" class="btn-ngrok-stop" id="remoteNgrokStopBtn">⏹ Desligar ngrok</button>`
+                    : `<button type="button" class="btn-ngrok-start" id="remoteNgrokStartBtn">▶ Ativar ngrok</button>`}
+                </div>
+                ${ngrokInfo.error ? `<div style="font-size:11.5px; color:var(--danger);">${MD.escapeHtml(ngrokInfo.error)}</div>` : ''}
+                ${ngrokActive && ngrokUrl
+                  ? `
+                    <div class="remote-url-box">
+                      <a href="${MD.escapeHtml(ngrokUrl)}" target="_blank" rel="noopener noreferrer">${MD.escapeHtml(ngrokUrl)}</a>
+                      <button type="button" class="kc-move-btn" id="remoteCopyNgrokBtn">Copiar</button>
+                    </div>
+                    ${ngrokQrSvg ? `<div class="remote-qr-box" id="remoteNgrokQrBox" aria-label="QR Code Túnel ngrok">${ngrokQrSvg}</div>` : ''}
+                  `
+                  : `<div style="font-size:11.5px; color:var(--text-3);">${ngrokInfo.available === false ? 'Binário ngrok não encontrado no sistema.' : 'Gera um endereço HTTPS público temporário para acessar de qualquer lugar.'}</div>`}
+              </div>
+
+              <!-- Bloco PIN de Acesso Remoto -->
+              <div class="remote-block">
+                <div class="remote-block-head">
+                  <strong style="font-size:13.5px;">🔐 PIN de Acesso Remoto</strong>
+                  <span class="settings-path-badge ${pinEnabled && pinConfigured ? 'is-ok' : 'is-miss'}">${pinEnabled && pinConfigured ? 'Protegido' : 'Livre'}</span>
+                </div>
+                <p style="margin:0; font-size:12px; color:var(--text-2); line-height:1.45;">
+                  O acesso local em <code>127.0.0.1</code> nunca pede PIN. Apenas conexões via Wi-Fi LAN ou ngrok solicitam desbloqueio.
+                </p>
+                <label class="switch-inline" style="font-size:12.5px; color:var(--text-1);">
+                  <input type="checkbox" id="remotePinEnabledChk"${pinEnabled ? ' checked' : ''}>
+                  <span>Ativar proteção por PIN</span>
+                </label>
+                <label style="display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--text-2);">
+                  <span>PIN (4–8 dígitos)</span>
+                  <input type="password" inputmode="numeric" maxlength="8" id="remotePinInput" autocomplete="new-password" placeholder="${pinConfigured ? 'PIN já configurado (digite novo para alterar)' : 'Ex.: 2026'}" style="width:100%; box-sizing:border-box; padding:8px 10px; border-radius:8px; background:var(--bg-input); border:1px solid var(--border); font-size:12.5px;">
+                </label>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                  <button type="button" class="btn-sm btn-accent" id="remotePinSaveBtn">Salvar PIN</button>
+                  ${pinConfigured ? '<button type="button" class="btn-sm btn-danger" id="remotePinClearBtn">Limpar PIN</button>' : ''}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -7484,6 +10890,120 @@
         }
       };
     }
+
+    // Bindings Card 5: Acesso Remoto
+    document.getElementById('remoteRefreshBtn')?.addEventListener('click', () => loadRemoteStatus({ quiet: false, rerender: true }));
+    document.getElementById('remoteCopyLanBtn')?.addEventListener('click', () => {
+      if (lanUrl) copyText(lanUrl, 'URL Wi-Fi LAN copiada!');
+    });
+    document.getElementById('remoteCopyNgrokBtn')?.addEventListener('click', () => {
+      if (ngrokUrl) copyText(ngrokUrl, 'URL pública ngrok copiada!');
+    });
+
+    document.getElementById('remoteLanToggleBtn')?.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/remote/lan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: !lanEnabled }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'Erro ao alternar Wi-Fi LAN');
+        state.remoteStatus = json;
+        if (json.config) state.settingsConfig = json.config;
+        updateRemoteChip();
+        renderSettingsView(container);
+        showToast(json.lanEnabled ? `Wi-Fi LAN ligado em ${json.lanUrl}` : 'Wi-Fi LAN desligado.');
+      } catch (err) {
+        showToast(err.message);
+      }
+    });
+
+    document.getElementById('remoteNgrokStartBtn')?.addEventListener('click', async () => {
+      const tokenVal = document.getElementById('remoteNgrokTokenInput')?.value.trim() || '';
+      showToast('Iniciando túnel ngrok...');
+      try {
+        const res = await fetch('/api/remote/ngrok/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(tokenVal ? { authtoken: tokenVal } : {}),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.hint ? `${json.error} (${json.hint})` : (json.error || 'Erro ao ativar ngrok'));
+        state.remoteStatus = json;
+        if (json.config) state.settingsConfig = json.config;
+        updateRemoteChip();
+        renderSettingsView(container);
+        showToast(`Túnel ngrok ativo: ${json.ngrokUrl}`);
+      } catch (err) {
+        showToast(err.message);
+      }
+    });
+
+    document.getElementById('remoteNgrokStopBtn')?.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/remote/ngrok/stop', { method: 'POST' });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'Erro ao desligar ngrok');
+        state.remoteStatus = json;
+        updateRemoteChip();
+        renderSettingsView(container);
+        showToast('Túnel ngrok desligado!');
+      } catch (err) {
+        showToast(err.message);
+      }
+    });
+
+    document.getElementById('remotePinSaveBtn')?.addEventListener('click', async () => {
+      const enabled = Boolean(document.getElementById('remotePinEnabledChk')?.checked);
+      const pinRaw = document.getElementById('remotePinInput')?.value.trim() || '';
+      if (pinRaw && (pinRaw.length < 4 || pinRaw.length > 8)) {
+        showToast('O PIN deve ter entre 4 e 8 dígitos/caracteres.');
+        return;
+      }
+      if (enabled && !pinConfigured && !pinRaw) {
+        showToast('Defina um PIN de 4 a 8 dígitos para ativar a proteção.');
+        return;
+      }
+      try {
+        const res = await fetch('/api/remote/pin', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pinEnabled: enabled,
+            ...(pinRaw ? { pinCode: pinRaw } : {}),
+          }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'Erro ao salvar PIN');
+        state.remoteStatus = json;
+        if (json.config) state.settingsConfig = json.config;
+        updateRemoteChip();
+        renderSettingsView(container);
+        showToast(enabled ? 'Proteção por PIN ativada!' : 'PIN atualizado (proteção desativada).');
+      } catch (err) {
+        showToast(err.message);
+      }
+    });
+
+    document.getElementById('remotePinClearBtn')?.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/remote/pin', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pinEnabled: false, clearPin: true }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'Erro ao limpar PIN');
+        state.remoteStatus = json;
+        if (json.config) state.settingsConfig = json.config;
+        updateRemoteChip();
+        renderSettingsView(container);
+        showToast('PIN removido.');
+      } catch (err) {
+        showToast(err.message);
+      }
+    });
   }
 
   /* =========================================================
@@ -7892,12 +11412,20 @@ ${summary || ''}
       updateHeaderChrome();
 
       if (state.view === 'whiteboard') {
+        state.wbListFetchedChannel = '';
+        if (!state.activeBoardId) {
+          await fetchBoardsListForChannel(state.activeChannel, { force: true });
+          return;
+        }
         if (source === 'fs') {
           try {
             const bRes = await fetch(`/api/boards?channel=${encodeURIComponent(state.activeChannel)}`, { cache: 'no-store' });
             if (bRes.ok) {
               const bJson = await bRes.json();
-              if (Array.isArray(bJson.boards)) state.boardsList = bJson.boards;
+              if (Array.isArray(bJson.boards)) {
+                state.boardsList = bJson.boards;
+                state.wbListFetchedChannel = state.activeChannel;
+              }
             }
           } catch {
             // mantém lista atual
@@ -7918,6 +11446,15 @@ ${summary || ''}
 
       if (state.view === 'settings') {
         await loadSettingsConfig({ force: true });
+      } else if (state.view === 'catalog') {
+        await ensureCatalogCuradoria(state.activeChannel, { force: true });
+        renderCurrentView();
+      } else if (state.view === 'recorder') {
+        await loadRecordingsLibrary(state.activeChannel, { rerender: false });
+        renderCurrentView();
+      } else if (state.view === 'notes') {
+        await loadNotesForChannel(state.activeChannel, { rerender: false });
+        renderCurrentView();
       } else {
         renderCurrentView();
       }
@@ -8041,9 +11578,30 @@ ${summary || ''}
       };
     }
 
+    const pinTabBtn = document.getElementById('pinTabstripBtn');
+    if (pinTabBtn) {
+      pinTabBtn.onclick = () => {
+        const nextVal = !state.prefs?.tabBarAlwaysOpen;
+        state.prefs = { ...(state.prefs || {}), tabBarAlwaysOpen: nextVal };
+        const saved = loadJsonStorage(STORAGE_KEY_PREFS, {});
+        saved.tabBarAlwaysOpen = nextVal;
+        saveJsonStorage(STORAGE_KEY_PREFS, saved);
+        if (!nextVal) {
+          state.tabBarPinned = null;
+        }
+        renderTabstrip();
+      };
+    }
+
     const collapseTabBtn = document.getElementById('collapseTabstripBtn');
     if (collapseTabBtn) {
       collapseTabBtn.onclick = () => {
+        if (state.prefs?.tabBarAlwaysOpen) {
+          state.prefs.tabBarAlwaysOpen = false;
+          const saved = loadJsonStorage(STORAGE_KEY_PREFS, {});
+          saved.tabBarAlwaysOpen = false;
+          saveJsonStorage(STORAGE_KEY_PREFS, saved);
+        }
         state.tabBarPinned = false;
         renderTabstrip();
       };
@@ -8072,6 +11630,11 @@ ${summary || ''}
       } else if (resolved.kind === 'doc') {
         document.querySelectorAll('.modal-backdrop, .drawer-backdrop').forEach((m) => m.classList.add('hidden'));
         openNewTab({ kind: 'studio', channel: state.activeChannel, view: 'scripts', docPath: resolved.docPath }, { activate: true });
+      } else if (resolved.kind === 'board') {
+        openNewTab(
+          { kind: 'studio', channel: resolved.channel || state.activeChannel, view: 'whiteboard', boardId: resolved.boardId },
+          { activate: true }
+        );
       } else if (resolved.kind === 'external') {
         const cleanTitle = resolved.title.replace(/\s*↗\s*$/, '').trim() || getHostnameLabel(resolved.url);
         openNewTab(
@@ -8110,7 +11673,11 @@ ${summary || ''}
     document.querySelectorAll('#sideNav .nav-item').forEach((btn) => {
       btn.onclick = () => {
         closeAllMenus();
-        setView(btn.dataset.view);
+        if (btn.dataset.view === 'whiteboard') {
+          setView('whiteboard', null, { boardId: null });
+        } else {
+          setView(btn.dataset.view);
+        }
       };
     });
 
@@ -8119,6 +11686,27 @@ ${summary || ''}
       setView('dashboard');
     };
     document.getElementById('connectionModeBtn').onclick = () => connectLocalFolder();
+    document.getElementById('remoteLiveChip')?.addEventListener('click', () => {
+      closeAllMenus();
+      state.settingsChannelKey = state.activeChannel;
+      setView('settings');
+      setTimeout(() => {
+        document.getElementById('settingsRemoteCard')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 120);
+    });
+    document.getElementById('remoteNgrokOffChip')?.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/api/remote/ngrok/stop', { method: 'POST' });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'Erro ao desligar ngrok');
+        state.remoteStatus = json;
+        updateRemoteChip();
+        if (state.view === 'settings') renderSettingsView(document.getElementById('viewContainer'));
+        showToast('Túnel ngrok desligado!');
+      } catch (err) {
+        showToast(err.message);
+      }
+    });
     document.getElementById('cmdSearchBtn').onclick = () => {
       closeAllMenus();
       openCmdModal();
@@ -8195,7 +11783,7 @@ ${summary || ''}
               if (state.view === 'whiteboard') {
                 openWbBoardModal('create');
               } else {
-                setView('whiteboard');
+                setView('whiteboard', null, { boardId: null });
                 setTimeout(() => {
                   if (state.serverMode) openWbBoardModal('create');
                 }, 120);
@@ -8540,7 +12128,7 @@ ${summary || ''}
 
         try {
           if (wbBoardModalMode === 'rename') {
-            const curId = state.activeBoardId;
+            const curId = wbBoardModalTargetId || state.activeBoardId;
             if (!curId) return;
             const res = await fetch('/api/boards', {
               method: 'PUT',
@@ -8554,12 +12142,21 @@ ${summary || ''}
             });
             const json = await res.json();
             if (!res.ok) throw new Error(json.error || 'Erro ao renomear quadro');
+            wbBoardModalTargetId = null;
             state.boardsList = json.boards || state.boardsList;
-            state.activeBoardId = json.board.id;
+            state.wbListFetchedChannel = state.activeChannel;
+            if (state.data?.channels?.[state.activeChannel]) {
+              state.data.channels[state.activeChannel].boards = state.boardsList;
+            }
             document.getElementById('wbBoardModal')?.classList.add('hidden');
-            syncActiveTabFromState();
-            syncBrowserUrl({ replace: true });
-            syncWhiteboardTopbarUI();
+            if (state.activeBoardId === curId) {
+              state.activeBoardId = json.board.id;
+              syncActiveTabFromState();
+              syncBrowserUrl({ replace: true });
+              syncWhiteboardTopbarUI();
+            } else if (state.view === 'whiteboard') {
+              renderCurrentView();
+            }
             showToast(`Quadro renomeado para "${json.board.title}"!`);
           } else {
             if (state.boardDirtyScene) {
@@ -8580,11 +12177,17 @@ ${summary || ''}
             });
             const json = await res.json();
             if (!res.ok) throw new Error(json.error || 'Erro ao criar quadro');
+            wbBoardModalTargetId = null;
             state.boardsList = json.boards || [];
+            state.wbListFetchedChannel = state.activeChannel;
             if (json.state) state.data = normalizePayload(json.state);
             document.getElementById('wbBoardModal')?.classList.add('hidden');
-            await loadBoardIntoSession(json.board.id);
             showToast(`Quadro "${json.board.title}" criado!`);
+            if (state.view === 'whiteboard' && state.activeBoardId && document.getElementById('excalidrawFrame')) {
+              await loadBoardIntoSession(json.board.id);
+            } else {
+              openBoardEditor(json.board.id);
+            }
           }
         } catch (err) {
           showToast(err.message);
@@ -8595,8 +12198,8 @@ ${summary || ''}
     const wbDeleteConfirmBtn = document.getElementById('wbDeleteConfirmBtn');
     if (wbDeleteConfirmBtn) {
       wbDeleteConfirmBtn.onclick = async () => {
-        if (!state.serverMode || !state.activeBoardId) return;
-        const targetId = state.activeBoardId;
+        const targetId = state.wbDeleteTargetId || state.activeBoardId;
+        if (!state.serverMode || !targetId) return;
         try {
           const res = await fetch(
             `/api/boards?channel=${encodeURIComponent(state.activeChannel)}&id=${encodeURIComponent(targetId)}`,
@@ -8605,13 +12208,17 @@ ${summary || ''}
           const json = await res.json();
           if (!res.ok) throw new Error(json.error || 'Erro ao excluir quadro');
           document.getElementById('wbDeleteConfirmModal')?.classList.add('hidden');
-          state.boardDirtyScene = null;
-          state.boardActiveScene = null;
-          state.activeBoardId = null;
+          const deletedOpenBoard = state.activeBoardId === targetId;
+          state.wbDeleteTargetId = null;
           state.boardsList = json.boards || [];
+          state.wbListFetchedChannel = state.activeChannel;
           if (json.state) state.data = normalizePayload(json.state);
           showToast(`Quadro "${targetId}" excluído!`);
-          await initWhiteboardSession();
+          if (deletedOpenBoard) {
+            await backToWhiteboardList({ skipSave: true });
+          } else if (state.view === 'whiteboard') {
+            renderCurrentView();
+          }
         } catch (err) {
           showToast(err.message);
         }
@@ -8697,6 +12304,7 @@ ${summary || ''}
     await loadInitialData();
     if (state.serverMode) {
       connectLiveEvents();
+      loadRemoteStatus({ quiet: true, rerender: state.view === 'settings' });
     }
     updateHeaderChrome();
     renderCurrentView();

@@ -4,8 +4,10 @@ import { pathToFileURL } from 'node:url';
 import { DATA_DIR, WEB_DIR, loadConfig, getCliArg } from './config.mjs';
 import { getVersioningSummary } from './versioning.mjs';
 import { listBoards } from './boards.mjs';
+import { fetchChannelAllVideos } from './youtube-scraper.mjs';
+import { loadCuradoria } from './catalog-curadoria.mjs';
 
-const IGNORED_DIRS = new Set(['studio', '.git', 'node_modules']);
+const IGNORED_DIRS = new Set(['studio', '.git', 'node_modules', 'gravacoes']);
 
 const STATUS_ORDER = [
   'ideia',
@@ -320,6 +322,46 @@ function readJsonSafe(filePath) {
   }
 }
 
+function countWorkspaceNotes(workspacePath) {
+  if (!workspacePath) return 0;
+  const notesPath = path.join(workspacePath, '.studio-data', 'notas.json');
+  const data = readJsonSafe(notesPath);
+  return Array.isArray(data?.notes) ? data.notes.length : 0;
+}
+
+function countWorkspaceRecordings(workspacePath) {
+  if (!workspacePath) return 0;
+  const recDir = path.join(workspacePath, 'gravacoes');
+  if (!fs.existsSync(recDir)) return 0;
+  try {
+    const rootStat = fs.lstatSync(recDir);
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return 0;
+    const sessions = fs.readdirSync(recDir, { withFileTypes: true });
+    let count = 0;
+    for (const session of sessions) {
+      if (session.isSymbolicLink() || !session.isDirectory()) continue;
+      if (session.name.startsWith('.')) continue;
+      const sessionDir = path.join(recDir, session.name);
+      const entries = fs.readdirSync(sessionDir, { withFileTypes: true });
+      let sessionTakes = 0;
+      for (const entry of entries) {
+        if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
+        if (entry.name.startsWith('.')) continue;
+        if (/^take-/i.test(entry.name)) {
+          sessionTakes += 1;
+        }
+      }
+      if (sessionTakes === 0 && fs.existsSync(path.join(sessionDir, 'meta.json'))) {
+        sessionTakes = 1;
+      }
+      count += sessionTakes;
+    }
+    return count;
+  } catch {
+    return 0;
+  }
+}
+
 function listKdenliveVideoFolders(dirPath, defaultCanal) {
   if (!dirPath || !fs.existsSync(dirPath)) return [];
   try {
@@ -505,7 +547,37 @@ function indexChannel(channelKey, channelCfg) {
   });
 
   const ytCache = loadYouTubeCache(channelKey, channelCfg);
-  const videos = Array.isArray(ytCache.videos) ? ytCache.videos : [];
+  const rawVideos = Array.isArray(ytCache.videos) ? ytCache.videos : [];
+  const videos = rawVideos.map((v) => {
+    const isShort = v.isShort !== undefined ? Boolean(v.isShort) : v.type === 'short';
+    const vid = String(v.videoId || v.id || '');
+    return {
+      ...v,
+      id: String(v.id || vid),
+      videoId: vid,
+      isShort,
+      type: v.type || (isShort ? 'short' : 'long'),
+      duration: String(v.duration || ''),
+      views: Number(v.views || 0),
+      viewsText: String(v.viewsText || ''),
+      published: String(v.published || ''),
+      publishedText: String(v.publishedText || ''),
+    };
+  });
+  const totalShorts = videos.filter((v) => v.isShort).length;
+  const totalLongs = videos.length - totalShorts;
+  const totalViews = Number(
+    ytCache.totalViews ?? videos.reduce((acc, v) => acc + Number(v.views || 0), 0)
+  );
+  const lastSyncedAt = String(
+    ytCache.lastSyncedAt || ytCache.channel?.lastSyncedAt || ytCache.channel?.lastSync || ''
+  );
+  const computedTotalVideos = Math.max(
+    Number(channelCfg.totalVideos || 0),
+    Number(ytCache.totalVideos ?? ytCache.channel?.totalVideos ?? 0),
+    videos.length
+  );
+
   const folderSet = new Set(docs.map((d) => d.folder));
   const seriesSet = new Set([
     ...(channelCfg.seriesList || []),
@@ -546,10 +618,11 @@ function indexChannel(channelKey, channelCfg) {
       channelCfg.subscribers !== undefined
         ? channelCfg.subscribers
         : Number(ytCache.channel?.subscribers || 0),
-    totalVideos:
-      channelCfg.totalVideos !== null && channelCfg.totalVideos !== undefined
-        ? channelCfg.totalVideos
-        : Number(ytCache.channel?.totalVideos || videos.length),
+    totalVideos: computedTotalVideos,
+    totalLongs,
+    totalShorts,
+    totalViews,
+    lastSyncedAt,
     avatar: channelCfg.avatar !== undefined ? channelCfg.avatar : (ytCache.channel?.avatar || ''),
     bio: channelCfg.bio !== undefined ? channelCfg.bio : (ytCache.channel?.bio || ''),
     bannerEnabled: Boolean(channelCfg.bannerEnabled),
@@ -563,6 +636,9 @@ function indexChannel(channelKey, channelCfg) {
   };
 
   const boards = listBoards(channelCfg.workspacePath);
+  const curadoria = loadCuradoria(channelCfg.workspacePath);
+  const notesCount = countWorkspaceNotes(channelCfg.workspacePath);
+  const recordingsCount = countWorkspaceRecordings(channelCfg.workspacePath);
 
   return {
     key: channelKey,
@@ -576,6 +652,20 @@ function indexChannel(channelKey, channelCfg) {
     series: Array.from(seriesSet),
     docs,
     boards,
+    curadoria,
+    notesCount,
+    recordingsCount,
+    stats: {
+      docsCount: docs.length,
+      videosCount: videos.length,
+      totalVideos: computedTotalVideos,
+      totalLongs,
+      totalShorts,
+      totalViews,
+      boardsCount: boards.length,
+      notesCount,
+      recordingsCount,
+    },
   };
 }
 
@@ -621,15 +711,6 @@ export function syncWorkspace({ serverMode = false, config: passedConfig = null 
   return payload;
 }
 
-function decodeXmlEntities(str) {
-  return String(str || '')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
-}
-
 function inferVideoSerie(title, isShort, channelKey) {
   if (/ci[eê]ncia em artigos/i.test(title)) return 'Ciência em Artigos';
   if (
@@ -649,26 +730,91 @@ function inferVideoSerie(title, isShort, channelKey) {
   return channelKey === 'crom' ? 'Ensaios & Avulsos' : 'Construção Real';
 }
 
-function updateCatalogMarkdown(cache, channelCfg) {
-  if (!channelCfg?.workspacePath) return;
-  const catalogPath = path.join(channelCfg.workspacePath, '00-canal', 'catalogo-youtube.md');
-  if (!fs.existsSync(catalogPath) || fs.lstatSync(catalogPath).isSymbolicLink()) return;
+function buildInitialCatalogMarkdown(channelKey, channelCfg, totalViews, totalVideos) {
+  const handle = channelCfg.handle || channelCfg.name || channelKey;
+  const channelId = channelCfg.channelId || '';
+  const today = new Date().toISOString().slice(0, 10);
+  const frontmatter = [
+    '---',
+    `id: ${JSON.stringify(`${channelKey}-00-catalogo-youtube`)}`,
+    `titulo: ${JSON.stringify(`Catálogo Oficial de Vídeos (${handle})`)}`,
+    'tipo: "referencia"',
+    'status: "referencia"',
+    'serie: "Canal & Ops"',
+    'formato: "doc"',
+    'prioridade: "alta"',
+    'duracao_estimada: "4 min"',
+    `data_criacao: ${JSON.stringify(today)}`,
+    'data_alvo: ""',
+    'repo_github: "MrJc01"',
+    `youtube_id: ${JSON.stringify(channelId)}`,
+    `views: ${Number(totalViews || 0)}`,
+    'tags: ["youtube", "catalogo", "historico", "analytics"]',
+    `resumo: ${JSON.stringify(`Registro completo dos ${totalVideos} vídeos sincronizados do canal ${handle} com formatos, datas e visualizações.`)}`,
+    '---',
+    '',
+    `# Catálogo Oficial — YouTube \`${handle}\``,
+    '',
+    '<!-- YOUTUBE_CATALOG_START -->',
+    '<!-- YOUTUBE_CATALOG_END -->',
+    '',
+  ];
+  return frontmatter.join('\n');
+}
 
-  const content = fs.readFileSync(catalogPath, 'utf8');
+function updateFrontmatterViews(content, totalViews) {
+  const norm = String(content || '').replace(/\r\n/g, '\n');
+  if (!norm.startsWith('---\n')) return content;
+  const endIdx = norm.indexOf('\n---\n', 4);
+  if (endIdx === -1) return content;
+  const fm = norm.slice(0, endIdx);
+  const rest = norm.slice(endIdx);
+  if (/^views:\s*\d+/m.test(fm)) {
+    return fm.replace(/^views:\s*\d+/m, `views: ${Number(totalViews || 0)}`) + rest;
+  }
+  return content;
+}
+
+function updateCatalogMarkdown(cache, channelCfg, channelKey) {
+  if (!channelCfg?.workspacePath || !fs.existsSync(channelCfg.workspacePath)) return;
+  const canalDir = path.join(channelCfg.workspacePath, '00-canal');
+  const catalogPath = path.join(canalDir, 'catalogo-youtube.md');
+
+  if (fs.existsSync(catalogPath) && fs.lstatSync(catalogPath).isSymbolicLink()) return;
+
+  const videos = [...(cache.videos || [])].sort((a, b) => {
+    if (a.published && b.published) {
+      return String(b.published).localeCompare(String(a.published));
+    }
+    if (a.published && !b.published) return -1;
+    if (!a.published && b.published) return 1;
+    return 0;
+  });
+
+  const shorts = videos.filter((v) => v.isShort || v.type === 'short').length;
+  const longs = videos.length - shorts;
+  const totalViews = Number(
+    cache.totalViews ?? videos.reduce((acc, v) => acc + Number(v.views || 0), 0)
+  );
+  const subs = Number(channelCfg.subscribers ?? cache.channel?.subscribers ?? 0);
+  const totalPublic = Math.max(
+    videos.length,
+    Number(channelCfg.totalVideos ?? cache.totalVideos ?? cache.channel?.totalVideos ?? videos.length)
+  );
+
+  let content;
+  if (!fs.existsSync(catalogPath)) {
+    fs.mkdirSync(canalDir, { recursive: true });
+    content = buildInitialCatalogMarkdown(channelKey, channelCfg, totalViews, videos.length);
+  } else {
+    content = updateFrontmatterViews(fs.readFileSync(catalogPath, 'utf8'), totalViews);
+  }
+
   const startTag = '<!-- YOUTUBE_CATALOG_START -->';
   const endTag = '<!-- YOUTUBE_CATALOG_END -->';
   const startIdx = content.indexOf(startTag);
   const endIdx = content.indexOf(endTag);
   if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) return;
-
-  const videos = [...(cache.videos || [])].sort((a, b) =>
-    String(b.published || '').localeCompare(String(a.published || ''))
-  );
-  const longs = videos.filter((v) => v.type === 'long').length;
-  const shorts = videos.filter((v) => v.type === 'short').length;
-  const totalViews = videos.reduce((acc, v) => acc + Number(v.views || 0), 0);
-  const subs = Number(channelCfg.subscribers ?? cache.channel?.subscribers ?? 0);
-  const totalPublic = Number(channelCfg.totalVideos ?? cache.channel?.totalVideos ?? videos.length);
 
   const summaryLine =
     totalPublic > videos.length
@@ -684,9 +830,10 @@ function updateCatalogMarkdown(cache, channelCfg) {
 
   for (const v of videos) {
     const safeTitle = String(v.title || '').replace(/\|/g, '-');
-    const formatLabel = v.type === 'short' ? 'Short' : 'Long';
+    const formatLabel = v.isShort || v.type === 'short' ? 'Short' : 'Long';
+    const dateLabel = v.published || v.publishedText || '—';
     lines.push(
-      `| \`${v.published}\` | ${formatLabel} | ${v.views} | ${safeTitle} | ${v.serie} | [${v.id}](${v.url}) |`
+      `| \`${dateLabel}\` | ${formatLabel} | ${v.views} | ${safeTitle} | ${v.serie || '—'} | [${v.id}](${v.url}) |`
     );
   }
 
@@ -703,94 +850,129 @@ function updateCatalogMarkdown(cache, channelCfg) {
 async function syncChannelRss(channelKey, channelCfg) {
   const cache = loadYouTubeCache(channelKey, channelCfg);
   const channelId = channelCfg.channelId || cache.channel?.id || '';
-  if (!channelId || /^UCX+$|^UCY+$/i.test(channelId)) {
+  const handle = channelCfg.handle || cache.channel?.handle || '';
+  const hasValidChannelId = Boolean(channelId && !/^UCX+$|^UCY+$/i.test(channelId));
+
+  if (!hasValidChannelId && !handle) {
     return {
       channel: channelKey,
       ok: false,
       updatedCount: 0,
-      warning: `Canal "${channelKey}" sem channelId configurado.`,
+      warning: `Canal "${channelKey}" sem channelId ou handle configurado.`,
     };
   }
 
-  const feedUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(channelId)}`;
   let warning = null;
   let updatedCount = 0;
+  let source = cache.source || 'cache';
 
   try {
-    const res = await fetch(feedUrl, {
-      headers: { 'User-Agent': 'Crom-YouTube-Studio-Sync/2.0' },
-      signal: AbortSignal.timeout(8000),
+    const scraped = await fetchChannelAllVideos({
+      handle,
+      channelId: hasValidChannelId ? channelId : '',
+      maxPages: 20,
     });
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
-    }
-    const xml = await res.text();
-    const entryMatches = xml.match(/<entry>[\s\S]*?<\/entry>/g) || [];
-    const existingById = new Map((cache.videos || []).map((v) => [v.id, v]));
+    source = scraped.source || 'youtube-html';
 
-    for (const entryXml of entryMatches) {
-      const id = (/<yt:videoId>([^<]+)<\/yt:videoId>/.exec(entryXml) || [])[1];
-      if (!id) continue;
-      const rawTitle = (/<title>([^<]+)<\/title>/.exec(entryXml) || [])[1] || '';
-      const title = decodeXmlEntities(rawTitle);
-      const published = ((/<published>([^<]+)<\/published>/.exec(entryXml) || [])[1] || '').slice(
-        0,
-        10
-      );
-      const viewsRaw = (/<media:statistics\s+views="(\d+)"/.exec(entryXml) || [])[1];
-      const views =
-        viewsRaw !== undefined ? Number(viewsRaw) : existingById.get(id)?.views || 0;
-      const href =
-        (/<link\s+rel="alternate"\s+href="([^"]+)"/.exec(entryXml) || [])[1] ||
-        `https://www.youtube.com/watch?v=${id}`;
-
-      const prev = existingById.get(id);
-      if (prev) {
-        prev.title = title || prev.title;
-        prev.views = views;
-        if (published) prev.published = published;
-      } else {
-        const isShort = href.includes('/shorts/');
-        existingById.set(id, {
-          id,
-          title,
-          published: published || new Date().toISOString().slice(0, 10),
-          views,
-          type: isShort ? 'short' : 'long',
-          serie: inferVideoSerie(title, isShort, channelKey),
-          url: href,
-          thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
-        });
-      }
-      updatedCount += 1;
-    }
-
-    cache.videos = Array.from(existingById.values()).sort((a, b) =>
-      String(b.published || '').localeCompare(String(a.published || ''))
+    const existingById = new Map(
+      (cache.videos || []).map((v) => [String(v.videoId || v.id), v])
     );
+
+    const enrichItem = (v) => {
+      const prev = existingById.get(v.videoId);
+      const isShort = Boolean(v.isShort || v.type === 'short');
+      const views = Number.isFinite(Number(v.views))
+        ? Number(v.views)
+        : Number(prev?.views || 0);
+      return {
+        id: v.videoId,
+        videoId: v.videoId,
+        title: v.title || prev?.title || '',
+        published: v.published || prev?.published || '',
+        publishedText: v.publishedText || prev?.publishedText || '',
+        views,
+        viewsText:
+          v.viewsText ||
+          (views > 0
+            ? `${views.toLocaleString('pt-BR')} visualizações`
+            : ''),
+        duration: v.duration || prev?.duration || '',
+        isShort,
+        type: isShort ? 'short' : 'long',
+        serie: prev?.serie || inferVideoSerie(v.title || prev?.title || '', isShort, channelKey),
+        url: v.url || prev?.url || `https://www.youtube.com/watch?v=${v.videoId}`,
+        thumbnail:
+          v.thumbnail ||
+          prev?.thumbnail ||
+          `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`,
+      };
+    };
+
+    let finalVideos;
+    if (source === 'rss-fallback' && existingById.size > 0) {
+      for (const v of scraped.videos) {
+        existingById.set(v.videoId, enrichItem(v));
+      }
+      finalVideos = Array.from(existingById.values());
+    } else {
+      finalVideos = scraped.videos.map(enrichItem);
+    }
+
+    finalVideos.sort((a, b) => {
+      if (a.published && b.published) {
+        return String(b.published).localeCompare(String(a.published));
+      }
+      if (a.published && !b.published) return -1;
+      if (!a.published && b.published) return 1;
+      return 0;
+    });
+
+    updatedCount = scraped.videos.length;
+    const totalVideos = finalVideos.length;
+    const totalShorts = finalVideos.filter((v) => v.isShort || v.type === 'short').length;
+    const totalLongs = totalVideos - totalShorts;
+    const totalViews = finalVideos.reduce((acc, v) => acc + Number(v.views || 0), 0);
+    const lastSyncedAt = new Date().toISOString();
+
+    cache.videos = finalVideos;
+    cache.totalVideos = totalVideos;
+    cache.totalLongs = totalLongs;
+    cache.totalShorts = totalShorts;
+    cache.totalViews = totalViews;
+    cache.lastSyncedAt = lastSyncedAt;
+    cache.source = source;
     cache.channel = {
       ...(cache.channel || {}),
       name: channelCfg.name || cache.channel?.name,
       handle: channelCfg.handle || cache.channel?.handle,
-      id: channelId,
+      id: channelId || cache.channel?.id || '',
       url: channelCfg.url || cache.channel?.url,
       subscribers: channelCfg.subscribers ?? cache.channel?.subscribers ?? 0,
-      totalVideos: channelCfg.totalVideos ?? cache.channel?.totalVideos,
+      totalVideos: Math.max(Number(channelCfg.totalVideos || 0), totalVideos),
+      totalLongs,
+      totalShorts,
+      totalViews,
       avatar: channelCfg.avatar || cache.channel?.avatar || '',
-      lastSync: new Date().toISOString(),
+      lastSync: lastSyncedAt,
+      lastSyncedAt,
     };
 
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(getYoutubeCachePath(channelKey), JSON.stringify(cache, null, 2), 'utf8');
-    updateCatalogMarkdown(cache, channelCfg);
+    updateCatalogMarkdown(cache, channelCfg, channelKey);
   } catch (err) {
-    warning = `Não foi possível acessar o RSS de ${channelKey} agora (${err.message}); mantendo cache local.`;
+    warning = `Não foi possível acessar o catálogo YouTube de ${channelKey} agora (${err.message}); mantendo cache local.`;
   }
 
   return {
     channel: channelKey,
     ok: !warning,
     updatedCount,
+    totalVideos: Number(cache.totalVideos ?? cache.videos?.length ?? 0),
+    totalLongs: Number(cache.totalLongs ?? 0),
+    totalShorts: Number(cache.totalShorts ?? 0),
+    totalViews: Number(cache.totalViews ?? 0),
+    source,
     warning,
   };
 }
@@ -839,10 +1021,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (withYoutube) {
     const res = await syncYouTubeRss({ serverMode: false, channel: channelArg, config });
     const summary = Object.values(res.state.channels)
-      .map((c) => `${c.key}:${c.docs.length}md/${c.videos.length}vid`)
+      .map(
+        (c) =>
+          `${c.key}:${c.docs.length}md/${c.videos.length}vid(${c.channel.totalLongs}L/${c.channel.totalShorts}S)`
+      )
       .join(', ');
     console.log(
-      `[Crom Studio Sync] ${summary} | RSS: ${res.ok ? `OK (${res.updatedCount})` : res.warning}`
+      `[Crom Studio Sync] ${summary} | YouTube: ${res.ok ? `OK (${res.updatedCount})` : res.warning}`
     );
   } else {
     const state = syncWorkspace({ serverMode: false, config });
