@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,6 +15,14 @@ import {
 } from './config.mjs';
 import { syncWorkspace, syncYouTubeRss, slugify } from './sync.mjs';
 import {
+  BOARDS_DIR_NAME,
+  listBoards,
+  readBoard,
+  createBoard,
+  saveBoard,
+  deleteBoard,
+} from './boards.mjs';
+import {
   getHistory,
   readRefContent,
   commitRevision,
@@ -26,7 +35,7 @@ import {
   deleteDocHistory,
 } from './versioning.mjs';
 
-const MAX_BODY_BYTES = 5 * 1024 * 1024;
+const MAX_BODY_BYTES = 35 * 1024 * 1024;
 const PROTECTED_FILES = new Set(['AGENTS.md', 'README.md']);
 
 const MIME_TYPES = {
@@ -42,6 +51,13 @@ const MIME_TYPES = {
   '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
   '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+  '.woff': 'font/woff',
+  '.ttf': 'font/ttf',
+  '.otf': 'font/otf',
+  '.wasm': 'application/wasm',
+  '.excalidraw': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
 };
 
 function sendJson(res, status, data) {
@@ -306,9 +322,54 @@ function createLiveWatchHub(config) {
   let pendingConfig = false;
   const pendingChannels = new Set();
   const pendingPaths = new Set();
+  const boardApiSnapshots = new Map();
+  let boardApiDirTouchedAt = 0;
 
   function markApiWrite(ms = 450) {
     suppressFsUntil = Math.max(suppressFsUntil, Date.now() + ms);
+  }
+
+  function markBoardDirTouch() {
+    boardApiDirTouchedAt = Date.now();
+  }
+
+  function markBoardWrite(channel, relPath, exists, fileHash = null) {
+    boardApiSnapshots.set(`${channel}:${relPath}`, {
+      exists: Boolean(exists),
+      hash: fileHash,
+      expiresAt: Date.now() + 1500,
+    });
+  }
+
+  function isSelfBoardFsEvent(channel, wsPath, relPath) {
+    const key = `${channel}:${relPath}`;
+    const snap = boardApiSnapshots.get(key);
+    if (!snap) return false;
+    if (Date.now() > snap.expiresAt) {
+      boardApiSnapshots.delete(key);
+      return false;
+    }
+
+    const abs = path.join(wsPath, relPath);
+    const existsNow = fs.existsSync(abs);
+    if (!snap.exists) {
+      return !existsNow;
+    }
+    if (!existsNow) {
+      boardApiSnapshots.delete(key);
+      return false;
+    }
+    try {
+      const diskRaw = fs.readFileSync(abs, 'utf8');
+      const diskHash = crypto.createHash('sha256').update(diskRaw, 'utf8').digest('hex');
+      if (diskHash === snap.hash) {
+        return true;
+      }
+      boardApiSnapshots.delete(key);
+      return false;
+    } catch {
+      return false;
+    }
   }
 
   function broadcast(payload) {
@@ -390,15 +451,21 @@ function createLiveWatchHub(config) {
         base.endsWith('.swp') ||
         base.endsWith('.swo') ||
         base.endsWith('.tmp') ||
+        base.includes('.tmp.') ||
         base.endsWith('.bak') ||
         base.endsWith('~') ||
         base.startsWith('.#')
       ) {
         return;
       }
+      if (rel === BOARDS_DIR_NAME && Date.now() - boardApiDirTouchedAt < 1000) {
+        if (fs.existsSync(path.join(wsPath, rel))) return;
+      }
       const isMd = rel.toLowerCase().endsWith('.md');
+      const isBoard = rel.toLowerCase().endsWith('.excalidraw');
       const isGit = rel === '.roteiro-git' || rel.startsWith('.roteiro-git/');
-      if (!isMd && !isGit && base.includes('.')) return;
+      if (!isMd && !isBoard && !isGit && base.includes('.')) return;
+      if (isBoard && isSelfBoardFsEvent(chKey, wsPath, rel)) return;
       scheduleFsFlush({ channel: chKey, filePath: rel });
     };
 
@@ -455,6 +522,8 @@ function createLiveWatchHub(config) {
 
   return {
     markApiWrite,
+    markBoardDirTouch,
+    markBoardWrite,
     broadcast,
     rebuildWatchers,
     handleSse(req, res) {
@@ -790,6 +859,111 @@ export function createStudioServer(config) {
         const state = syncWorkspace({ serverMode: true, config });
         watchHub.broadcast({ type: 'change', source: 'api', reason: 'version-delete', channel: target.channel, path: target.rel, ts: Date.now() });
         return sendJson(res, 200, { ...result, channel: target.channel, path: target.rel, state });
+      }
+
+      if (req.method === 'GET' && pathname === '/api/boards') {
+        const rawChannel = urlObj.searchParams.get('channel') || config.defaultChannel;
+        const { key, workspaceReal } = resolveChannel(config, rawChannel);
+        const boards = listBoards(workspaceReal);
+        return sendJson(res, 200, { ok: true, channel: key, boards });
+      }
+
+      if (req.method === 'GET' && pathname === '/api/boards/item') {
+        const rawChannel = urlObj.searchParams.get('channel') || config.defaultChannel;
+        const boardId = urlObj.searchParams.get('id') ?? urlObj.searchParams.get('slug');
+        const { key, workspaceReal } = resolveChannel(config, rawChannel);
+        const { board, scene } = readBoard(workspaceReal, boardId);
+        return sendJson(res, 200, { ok: true, channel: key, board, scene });
+      }
+
+      if (req.method === 'POST' && pathname === '/api/boards') {
+        const body = await readJsonBody(req);
+        const rawChannel = body.channel || urlObj.searchParams.get('channel') || config.defaultChannel;
+        const { key, workspaceReal } = resolveChannel(config, rawChannel);
+        watchHub.markBoardDirTouch();
+        const result = createBoard(workspaceReal, body);
+        watchHub.markBoardWrite(key, result.board.path, true, result.fileHash);
+        const state = syncWorkspace({ serverMode: true, config });
+        watchHub.broadcast({
+          type: 'change',
+          source: 'api',
+          reason: 'board-create',
+          channel: key,
+          boardId: result.board.id,
+          ts: Date.now(),
+        });
+        return sendJson(res, 201, {
+          ok: true,
+          channel: key,
+          board: result.board,
+          scene: result.scene,
+          boards: result.boards,
+          state,
+        });
+      }
+
+      if (req.method === 'PUT' && pathname === '/api/boards') {
+        const body = await readJsonBody(req);
+        const rawChannel = body.channel || urlObj.searchParams.get('channel') || config.defaultChannel;
+        const { key, workspaceReal } = resolveChannel(config, rawChannel);
+        const boardId =
+          body.id ?? body.slug ?? urlObj.searchParams.get('id') ?? urlObj.searchParams.get('slug');
+        const result = saveBoard(workspaceReal, boardId, body);
+        if (result.renamed) {
+          watchHub.markBoardWrite(
+            key,
+            `${BOARDS_DIR_NAME}/${result.previousId}.excalidraw`,
+            false,
+            null
+          );
+        }
+        watchHub.markBoardWrite(key, result.board.path, true, result.fileHash);
+        const state = result.renamed ? syncWorkspace({ serverMode: true, config }) : undefined;
+        watchHub.broadcast({
+          type: 'change',
+          source: 'api',
+          reason: 'board-save',
+          channel: key,
+          boardId: result.board.id,
+          ts: Date.now(),
+        });
+        return sendJson(res, 200, {
+          ok: true,
+          channel: key,
+          board: result.board,
+          updatedAt: result.board.updatedAt,
+          boards: result.boards,
+          ...(state ? { state } : {}),
+        });
+      }
+
+      if (req.method === 'DELETE' && pathname === '/api/boards') {
+        let boardId = urlObj.searchParams.get('id') ?? urlObj.searchParams.get('slug');
+        let rawChannel = urlObj.searchParams.get('channel');
+        if (!boardId || !rawChannel) {
+          const body = await readJsonBody(req).catch(() => ({}));
+          if (!boardId) boardId = body.id ?? body.slug;
+          if (!rawChannel) rawChannel = body.channel;
+        }
+        const { key, workspaceReal } = resolveChannel(config, rawChannel || config.defaultChannel);
+        const result = deleteBoard(workspaceReal, boardId);
+        watchHub.markBoardWrite(key, `${BOARDS_DIR_NAME}/${result.deleted}.excalidraw`, false, null);
+        const state = syncWorkspace({ serverMode: true, config });
+        watchHub.broadcast({
+          type: 'change',
+          source: 'api',
+          reason: 'board-delete',
+          channel: key,
+          boardId: result.deleted,
+          ts: Date.now(),
+        });
+        return sendJson(res, 200, {
+          ok: true,
+          channel: key,
+          deleted: result.deleted,
+          boards: result.boards,
+          state,
+        });
       }
 
       if (req.method === 'POST' && pathname === '/api/sync-youtube') {

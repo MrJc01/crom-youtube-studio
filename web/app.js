@@ -41,6 +41,8 @@
     dashboard: 'Visão Geral',
     scripts: 'Roteiros & Leitor',
     map: 'Mapa de Roteiros',
+    whiteboard: 'Quadro & Fluxos',
+    link: 'Link Fixado',
     pipeline: 'Pipeline Kanban',
     ideas: 'Ideias, Séries & GitHub',
     catalog: 'Catálogo YouTube',
@@ -53,6 +55,8 @@
     dashboard: 'visao-geral',
     scripts: 'roteiros',
     map: 'mapa',
+    whiteboard: 'quadro',
+    link: 'link',
     pipeline: 'pipeline',
     ideas: 'ideias',
     catalog: 'catalogo',
@@ -69,6 +73,13 @@
     leitor: 'scripts',
     mapa: 'map',
     map: 'map',
+    quadro: 'whiteboard',
+    quadros: 'whiteboard',
+    whiteboard: 'whiteboard',
+    excalidraw: 'whiteboard',
+    fluxograma: 'whiteboard',
+    canvas: 'whiteboard',
+    link: 'link',
     pipeline: 'pipeline',
     kanban: 'pipeline',
     ideias: 'ideas',
@@ -101,6 +112,7 @@
 
   const STORAGE_KEY_PREFS = 'crom_studio_prefs_v1';
   const STORAGE_KEY_DRAFTS = 'crom_studio_drafts_v2';
+  const STORAGE_KEY_TABS = 'crom_studio_tabs_v1';
 
   const state = {
     data: null,
@@ -139,6 +151,27 @@
     mapStatusFilter: 'all',
     mapSearch: '',
     mapHideMeta: true,
+    mapStyle: 'cards',
+    mapFlowLayout: 'clusters',
+    mapFlowFullscreen: false,
+    mapFlowZoom: 1,
+    mapFlowPanX: 0,
+    mapFlowPanY: 0,
+    mapFlowAutoFitKey: '',
+    tabs: [],
+    activeTabId: null,
+    tabBarPinned: null,
+    activeLinkTab: null,
+    activeBoardId: null,
+    boardsList: [],
+    boardSaveStatus: 'saved',
+    boardNodeFocus: false,
+    boardFullscreen: false,
+    boardDirtyScene: null,
+    boardActiveScene: null,
+    boardReady: false,
+    boardLastSavedAt: '',
+    pendingInsertDoc: null,
     chartMode: 'views',
     chartHoverIdx: null,
     selectorTab: 'multi',
@@ -543,6 +576,7 @@
 
     let view = 'dashboard';
     let docPath = null;
+    let boardId = null;
     if (rawSegs.length > 0) {
       const viewSlug = rawSegs[0].toLowerCase();
       if (SLUG_TO_VIEW[viewSlug]) {
@@ -550,6 +584,8 @@
         if (view === 'scripts' && rawSegs.length > 1) {
           const matched = findDocMatchInChannel(channels[channelKey], rawSegs.slice(1).join('/'));
           if (matched) docPath = matched.path;
+        } else if (view === 'whiteboard' && rawSegs.length > 1) {
+          boardId = rawSegs[1].trim().toLowerCase();
         }
       }
     }
@@ -559,16 +595,25 @@
     const docMode = modoMap[modoParam] || null;
     const verParam = params.get('versao') || null;
     const focusParam = params.get('foco') === '1';
+    const linkUrl = params.get('url') || '';
+    const linkTitle = params.get('titulo') || '';
 
-    return { channelKey, view, docPath, docMode, verParam, focusMode: focusParam };
+    return { channelKey, view, docPath, docMode, verParam, focusMode: focusParam, boardId, linkUrl, linkTitle };
   }
 
-  function buildFriendlyUrl(channelKey = state.activeChannel, view = state.view, docPath = state.selectedDocPath) {
+  function buildFriendlyUrl(
+    channelKey = state.activeChannel,
+    view = state.view,
+    docPath = state.selectedDocPath,
+    boardId = state.activeBoardId
+  ) {
     const ch = channelKey || 'mrj';
     const viewSlug = VIEW_TO_SLUG[view] || 'visao-geral';
     let routePath = view === 'dashboard' ? `/${ch}` : `/${ch}/${viewSlug}`;
     if (view === 'scripts' && docPath) {
       routePath += `/${docPath.split('/').map(encodeURIComponent).join('/')}`;
+    } else if (view === 'whiteboard' && boardId) {
+      routePath += `/${encodeURIComponent(boardId)}`;
     }
 
     const qs = new URLSearchParams();
@@ -577,6 +622,9 @@
       if (state.docMode && state.docMode !== 'read') qs.set('modo', modeNames[state.docMode] || state.docMode);
       if (state.activeVersion && state.activeVersion !== 'principal') qs.set('versao', state.activeVersion);
       if (state.focusMode) qs.set('foco', '1');
+    } else if (view === 'link' && state.activeLinkTab?.externalUrl) {
+      qs.set('url', state.activeLinkTab.externalUrl);
+      if (state.activeLinkTab.title) qs.set('titulo', state.activeLinkTab.title);
     }
     const queryStr = qs.toString() ? `?${qs.toString()}` : '';
 
@@ -620,6 +668,25 @@
     state.docMode = route.docMode || 'read';
     state.activeVersion = route.verParam || 'principal';
     state.focusMode = Boolean(route.focusMode && state.view === 'scripts');
+    state.activeBoardId = route.boardId || null;
+    state.boardDirtyScene = null;
+    state.boardActiveScene = null;
+    state.boardSaveStatus = 'saved';
+    state.boardFullscreen = false;
+    state.mapFlowFullscreen = false;
+    if (state.view === 'link' && route.linkUrl) {
+      state.activeLinkTab = {
+        id: state.activeTabId || 'link',
+        kind: 'link',
+        channel: route.channelKey,
+        view: 'link',
+        externalUrl: route.linkUrl,
+        title: route.linkTitle || route.linkUrl,
+        icon: isYouTubeUrl(route.linkUrl) ? '▶' : '↗',
+      };
+    } else if (state.view !== 'link') {
+      state.activeLinkTab = null;
+    }
     state.dirtyBody = null;
     state.dirtyMeta = null;
     state.hasUnsavedEdits = false;
@@ -644,7 +711,9 @@
           const json = await res.json();
           state.serverMode = true;
           state.data = normalizePayload(json);
-          applyRouteSnapshot(parseRouteFromLocation(state.data));
+          const route = parseRouteFromLocation(state.data);
+          applyRouteSnapshot(route);
+          initTabsFromStorage(route);
           syncBrowserUrl({ replace: true });
           return;
         }
@@ -657,16 +726,30 @@
     const rawGlobal = global.CROM_STUDIO_DATA || global.MRJ_STUDIO_DATA || {};
     const normalized = normalizePayload(structuredClone(rawGlobal));
     state.data = applyLocalDraftOverrides(normalized);
-    applyRouteSnapshot(parseRouteFromLocation(state.data));
+    const route = parseRouteFromLocation(state.data);
+    applyRouteSnapshot(route);
+    initTabsFromStorage(route);
     syncBrowserUrl({ replace: true });
   }
 
   function switchChannel(channelKey, { preserveView = true } = {}) {
     if (!state.data?.channels?.[channelKey]) return;
     stopPrompter();
+    if (state.view === 'whiteboard' && state.boardDirtyScene) {
+      flushWhiteboardSaveOnLeave();
+    }
 
     state.activeChannel = channelKey;
     state.selectedDocPath = null;
+    state.activeBoardId = null;
+    state.boardsList = [];
+    state.boardDirtyScene = null;
+    state.boardActiveScene = null;
+    state.boardSaveStatus = 'saved';
+    state.boardReady = false;
+    state.boardFullscreen = false;
+    state.mapFlowFullscreen = false;
+    state.mapFlowAutoFitKey = '';
     state.activeVersion = 'principal';
     state.versionHistory = null;
     state.versionFetchedKey = '';
@@ -690,7 +773,11 @@
     state.catalogFilter = 'all';
     state.chartHoverIdx = null;
     state.agentSelectedDoc = '';
-    if (!preserveView) state.view = 'dashboard';
+    if (!preserveView || state.view === 'link') {
+      state.view = 'dashboard';
+      state.activeLinkTab = null;
+      state.tabBarPinned = null;
+    }
 
     initSelectedSeriesForChannel(getActiveChannelData());
 
@@ -698,6 +785,7 @@
     prefs.activeChannel = channelKey;
     saveJsonStorage(STORAGE_KEY_PREFS, prefs);
 
+    syncActiveTabFromState();
     syncBrowserUrl({ replace: false });
     updateHeaderChrome();
     renderCurrentView();
@@ -1059,6 +1147,8 @@
       appEl.className = `studio-shell view-${state.view}${state.focusMode ? ' is-focus-mode' : ''}`;
     }
     document.body.classList.toggle('is-focus-mode', Boolean(state.focusMode));
+    document.body.classList.toggle('is-wb-fullscreen', Boolean(state.boardFullscreen && state.view === 'whiteboard'));
+    document.body.classList.toggle('is-flow-fullscreen', Boolean(state.mapFlowFullscreen && state.view === 'map' && state.mapStyle === 'flowchart'));
 
     const topChip = document.getElementById('topbarChannelChip');
     if (topChip) {
@@ -1079,12 +1169,37 @@
     document.querySelectorAll('#sideNav .nav-item').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.view === state.view);
     });
+
+    renderTabstrip();
   }
 
-  function setView(viewName, docPath = null, { replaceUrl = false } = {}) {
+  function setView(viewName, docPath = null, { replaceUrl = false, boardId = undefined } = {}) {
+    const prevView = state.view;
     stopPrompter();
+    if (prevView === 'whiteboard' && viewName !== 'whiteboard' && state.boardDirtyScene) {
+      flushWhiteboardSaveOnLeave();
+    }
+    if (viewName !== prevView) {
+      state.tabBarPinned = null;
+    }
     state.view = viewName;
     if (viewName !== 'scripts') state.focusMode = false;
+    if (viewName !== 'whiteboard') {
+      state.boardFullscreen = false;
+      state.boardReady = false;
+    }
+    if (viewName !== 'map') {
+      state.mapFlowFullscreen = false;
+    }
+    if (viewName !== 'link') {
+      state.activeLinkTab = null;
+    }
+    if (viewName === 'whiteboard' && boardId !== undefined) {
+      state.activeBoardId = boardId;
+      state.boardDirtyScene = null;
+      state.boardActiveScene = null;
+      state.boardSaveStatus = 'saved';
+    }
     if (viewName === 'settings' && !state.settingsChannelKey) {
       state.settingsChannelKey = state.activeChannel;
     }
@@ -1104,6 +1219,7 @@
       state.hasUnsavedEdits = false;
       state.commitMessageDraft = '';
     }
+    syncActiveTabFromState();
     syncBrowserUrl({ replace: replaceUrl });
     updateHeaderChrome();
     renderCurrentView();
@@ -1122,6 +1238,12 @@
         break;
       case 'map':
         renderMapView(container);
+        break;
+      case 'whiteboard':
+        renderWhiteboardView(container);
+        break;
+      case 'link':
+        renderExternalLinkTabView(container);
         break;
       case 'pipeline':
         renderPipelineView(container);
@@ -1143,6 +1265,851 @@
         break;
       default:
         renderDashboard(container);
+    }
+  }
+
+  /* =========================================================
+     BARRA DE ABAS RETRÁTIL NO TOPO & ABAS DE LINK EXTERNO
+  ========================================================= */
+  function isYouTubeUrl(url) {
+    return Boolean(extractYouTubeVideoId(url));
+  }
+
+  function extractYouTubeVideoId(url) {
+    const raw = String(url || '').trim();
+    if (!raw) return '';
+    try {
+      const u = new URL(raw);
+      const host = u.hostname.replace(/^www\./, '').toLowerCase();
+      if (host === 'youtu.be') {
+        return u.pathname.split('/').filter(Boolean)[0] || '';
+      }
+      if (host === 'youtube.com' || host === 'm.youtube.com') {
+        if (u.pathname === '/watch') return u.searchParams.get('v') || '';
+        const parts = u.pathname.split('/').filter(Boolean);
+        if (parts[0] === 'shorts' || parts[0] === 'embed' || parts[0] === 'live') {
+          return parts[1] || '';
+        }
+      }
+    } catch {
+      // ignora URL inválida
+    }
+    return '';
+  }
+
+  function getHostnameLabel(url) {
+    try {
+      return new URL(url).hostname.replace(/^www\./, '');
+    } catch {
+      return String(url || 'Link Externo').slice(0, 32);
+    }
+  }
+
+  function getViewTabIcon(viewName) {
+    const map = {
+      dashboard: '⌂',
+      scripts: '📄',
+      map: '🗺',
+      whiteboard: '◈',
+      link: '↗',
+      pipeline: '▥',
+      ideas: '💡',
+      catalog: '▶',
+      production: '🎬',
+      agent: '✦',
+      settings: '⚙',
+    };
+    return map[viewName] || '•';
+  }
+
+  function getTabPresentation(tab) {
+    if (!tab) return { icon: '⌂', title: 'Visão Geral', chBadge: state.activeChannel };
+    if (tab.kind === 'link') {
+      const ytId = extractYouTubeVideoId(tab.externalUrl);
+      return {
+        icon: ytId ? '▶' : '↗',
+        title: tab.title || getHostnameLabel(tab.externalUrl),
+        chBadge: 'link',
+      };
+    }
+    const chData = state.data?.channels?.[tab.channel];
+    const view = tab.view || 'dashboard';
+    if (view === 'scripts' && tab.docPath && chData?.docs?.length) {
+      const doc = chData.docs.find((d) => d.path === tab.docPath);
+      return {
+        icon: '📄',
+        title: doc?.meta?.titulo || tab.docPath.split('/').pop(),
+        chBadge: tab.channel || state.activeChannel,
+      };
+    }
+    if (view === 'whiteboard') {
+      const list = tab.channel === state.activeChannel && state.boardsList.length
+        ? state.boardsList
+        : (chData?.boards || []);
+      const b = tab.boardId ? list.find((item) => item.id === tab.boardId) : list[0];
+      return {
+        icon: '◈',
+        title: b?.title || tab.title || 'Quadro & Fluxos',
+        chBadge: tab.channel || state.activeChannel,
+      };
+    }
+    if (view === 'map' && tab.mapStyle === 'flowchart') {
+      return {
+        icon: '◈',
+        title: 'Mapa (Fluxograma)',
+        chBadge: tab.channel || state.activeChannel,
+      };
+    }
+    return {
+      icon: getViewTabIcon(view),
+      title: VIEW_TITLES[view] || 'Visão Geral',
+      chBadge: tab.channel || state.activeChannel,
+    };
+  }
+
+  function makeTabObject(spec = {}) {
+    const kind = spec.kind === 'link' ? 'link' : 'studio';
+    const channel = spec.channel && state.data?.channels?.[spec.channel]
+      ? spec.channel
+      : state.activeChannel;
+    const base = {
+      id: spec.id || `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      kind,
+      channel,
+      view: kind === 'link' ? 'link' : (spec.view || 'dashboard'),
+      docPath: kind === 'studio' ? (spec.docPath || null) : null,
+      boardId: kind === 'studio' ? (spec.boardId || null) : null,
+      mapStyle: kind === 'studio' ? (spec.mapStyle || 'cards') : 'cards',
+      externalUrl: kind === 'link' ? String(spec.externalUrl || '') : '',
+      title: spec.title || '',
+      icon: spec.icon || '',
+      embedEnabled: Boolean(spec.embedEnabled),
+    };
+    const pres = getTabPresentation(base);
+    base.title = spec.title || pres.title;
+    base.icon = pres.icon;
+    return base;
+  }
+
+  function saveTabsToStorage() {
+    saveJsonStorage(STORAGE_KEY_TABS, {
+      tabs: state.tabs,
+      activeTabId: state.activeTabId,
+    });
+  }
+
+  function isTabstripOpen() {
+    if (state.focusMode || state.boardFullscreen || state.mapFlowFullscreen) return false;
+    if (state.view === 'dashboard') return state.tabBarPinned !== false;
+    return state.tabBarPinned === true;
+  }
+
+  function initTabsFromStorage(route) {
+    const saved = loadJsonStorage(STORAGE_KEY_TABS, null);
+    const channels = state.data?.channels || {};
+    let loadedTabs = Array.isArray(saved?.tabs)
+      ? saved.tabs
+          .filter((t) => t && (t.kind === 'link' ? Boolean(t.externalUrl) : Boolean(t.view)))
+          .map((t) => makeTabObject({
+            ...t,
+            channel: channels[t.channel] ? t.channel : (state.activeChannel || Object.keys(channels)[0] || 'mrj'),
+          }))
+      : [];
+
+    const routeTabSpec = route.view === 'link' && route.linkUrl
+      ? makeTabObject({
+          kind: 'link',
+          channel: route.channelKey,
+          view: 'link',
+          externalUrl: route.linkUrl,
+          title: route.linkTitle || getHostnameLabel(route.linkUrl),
+        })
+      : makeTabObject({
+          kind: 'studio',
+          channel: route.channelKey,
+          view: route.view || 'dashboard',
+          docPath: route.docPath || null,
+          boardId: route.boardId || null,
+          mapStyle: state.mapStyle || 'cards',
+        });
+
+    if (!loadedTabs.length) {
+      loadedTabs = [routeTabSpec];
+      state.tabs = loadedTabs;
+      state.activeTabId = routeTabSpec.id;
+    } else {
+      state.tabs = loadedTabs;
+      const savedActive = loadedTabs.find((t) => t.id === saved?.activeTabId) || loadedTabs[0];
+      const urlSegs = global.location.protocol.startsWith('http')
+        ? global.location.pathname.split('/').filter(Boolean)
+        : [];
+      const matchesRoute =
+        savedActive.kind === routeTabSpec.kind &&
+        savedActive.channel === routeTabSpec.channel &&
+        savedActive.view === routeTabSpec.view &&
+        (routeTabSpec.view !== 'scripts' || savedActive.docPath === routeTabSpec.docPath) &&
+        (routeTabSpec.view !== 'whiteboard' || !routeTabSpec.boardId || savedActive.boardId === routeTabSpec.boardId) &&
+        (routeTabSpec.kind !== 'link' || savedActive.externalUrl === routeTabSpec.externalUrl);
+
+      if (matchesRoute) {
+        state.activeTabId = savedActive.id;
+        if (savedActive.view === 'map' && savedActive.mapStyle) {
+          state.mapStyle = savedActive.mapStyle;
+        }
+        if (savedActive.kind === 'link') {
+          state.view = 'link';
+          state.activeLinkTab = savedActive;
+        }
+      } else if (urlSegs.length > 0) {
+        const idx = loadedTabs.findIndex((t) => t.id === savedActive.id);
+        routeTabSpec.id = savedActive.id;
+        if (idx !== -1) loadedTabs[idx] = routeTabSpec;
+        state.activeTabId = routeTabSpec.id;
+        if (routeTabSpec.kind === 'link') state.activeLinkTab = routeTabSpec;
+      } else {
+        state.activeTabId = savedActive.id;
+        applyTabToStateSilent(savedActive);
+      }
+    }
+
+    saveTabsToStorage();
+  }
+
+  function applyTabToStateSilent(tab) {
+    if (!tab) return;
+    if (tab.channel && state.data?.channels?.[tab.channel] && tab.channel !== state.activeChannel) {
+      state.activeChannel = tab.channel;
+      state.settingsChannelKey = tab.channel;
+      initSelectedSeriesForChannel(getActiveChannelData());
+    }
+    if (tab.kind === 'link') {
+      state.view = 'link';
+      state.activeLinkTab = { ...tab };
+      state.focusMode = false;
+      state.boardFullscreen = false;
+      state.mapFlowFullscreen = false;
+      return;
+    }
+    state.activeLinkTab = null;
+    state.view = tab.view || 'dashboard';
+    state.selectedDocPath = state.view === 'scripts' ? (tab.docPath || null) : state.selectedDocPath;
+    if (state.view === 'whiteboard') {
+      state.activeBoardId = tab.boardId || null;
+    }
+    if (state.view === 'map' && tab.mapStyle) {
+      state.mapStyle = tab.mapStyle;
+    }
+  }
+
+  function syncActiveTabFromState() {
+    if (!state.data?.channels) return;
+    let tab = state.tabs.find((t) => t.id === state.activeTabId);
+    if (!tab) {
+      tab = makeTabObject({
+        kind: state.view === 'link' && state.activeLinkTab ? 'link' : 'studio',
+        channel: state.activeChannel,
+        view: state.view,
+        docPath: state.selectedDocPath,
+        boardId: state.activeBoardId,
+        mapStyle: state.mapStyle,
+        externalUrl: state.activeLinkTab?.externalUrl || '',
+        title: state.activeLinkTab?.title || '',
+        embedEnabled: Boolean(state.activeLinkTab?.embedEnabled),
+      });
+      state.tabs.push(tab);
+      state.activeTabId = tab.id;
+    } else if (state.view === 'link' && state.activeLinkTab) {
+      tab.kind = 'link';
+      tab.channel = state.activeChannel;
+      tab.view = 'link';
+      tab.externalUrl = state.activeLinkTab.externalUrl;
+      tab.title = state.activeLinkTab.title;
+      tab.embedEnabled = Boolean(state.activeLinkTab.embedEnabled);
+      tab.docPath = null;
+      tab.boardId = null;
+      const pres = getTabPresentation(tab);
+      tab.icon = pres.icon;
+      if (!tab.title) tab.title = pres.title;
+    } else {
+      tab.kind = 'studio';
+      tab.channel = state.activeChannel;
+      tab.view = state.view;
+      tab.docPath = state.view === 'scripts' ? state.selectedDocPath : null;
+      tab.boardId = state.view === 'whiteboard' ? state.activeBoardId : null;
+      tab.mapStyle = state.view === 'map' ? state.mapStyle : 'cards';
+      tab.externalUrl = '';
+      const pres = getTabPresentation(tab);
+      tab.title = pres.title;
+      tab.icon = pres.icon;
+    }
+    saveTabsToStorage();
+    renderTabstrip();
+  }
+
+  function renderTabstrip() {
+    const wrap = document.getElementById('studioTabstripWrap');
+    const list = document.getElementById('studioTabsList');
+    const pullBtn = document.getElementById('tabstripPullHandle');
+    const badge = document.getElementById('tabstripCountBadge');
+    if (!wrap || !list) return;
+
+    const open = isTabstripOpen();
+    wrap.classList.toggle('is-tabstrip-open', open);
+    if (pullBtn) pullBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (badge) badge.textContent = state.tabs.length > 0 ? String(state.tabs.length) : '';
+
+    list.innerHTML = state.tabs
+      .map((tab) => {
+        const pres = getTabPresentation(tab);
+        const isActive = tab.id === state.activeTabId;
+        const fullTitle = `${pres.title} (${pres.chBadge})`;
+        return `
+          <div class="studio-tab${isActive ? ' is-active' : ''}" data-tab-id="${MD.escapeHtml(tab.id)}" role="tab" tabindex="0" aria-selected="${isActive ? 'true' : 'false'}" title="${MD.escapeHtml(fullTitle)}">
+            <span class="studio-tab-icon">${MD.escapeHtml(pres.icon)}</span>
+            <span class="studio-tab-ch">${MD.escapeHtml(pres.chBadge)}</span>
+            <span class="studio-tab-title">${MD.escapeHtml(pres.title)}</span>
+            <button type="button" class="studio-tab-close" data-close-tab="${MD.escapeHtml(tab.id)}" title="Fechar aba">×</button>
+          </div>
+        `;
+      })
+      .join('');
+
+    list.querySelectorAll('.studio-tab[data-tab-id]').forEach((el) => {
+      el.onclick = (e) => {
+        if (e.target.closest('[data-close-tab]')) return;
+        activateTab(el.dataset.tabId);
+      };
+      el.onkeydown = (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          activateTab(el.dataset.tabId);
+        }
+      };
+    });
+
+    list.querySelectorAll('[data-close-tab]').forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        closeTab(btn.dataset.closeTab);
+      };
+    });
+  }
+
+  function openNewTab(spec = {}, { activate = true } = {}) {
+    const tab = makeTabObject({
+      channel: spec.channel || state.activeChannel,
+      view: spec.view || 'dashboard',
+      ...spec,
+    });
+    state.tabs.push(tab);
+    saveTabsToStorage();
+    if (activate) {
+      activateTab(tab.id);
+    } else {
+      renderTabstrip();
+      const pres = getTabPresentation(tab);
+      showToast(`Aba aberta em segundo plano: ${pres.title}`);
+    }
+    return tab;
+  }
+
+  function activateTab(tabId) {
+    const tab = state.tabs.find((t) => t.id === tabId);
+    if (!tab) return;
+    const prevView = state.view;
+    stopPrompter();
+
+    if (prevView === 'whiteboard' && state.boardDirtyScene) {
+      flushWhiteboardSaveOnLeave();
+    }
+
+    state.activeTabId = tab.id;
+    const nextView = tab.kind === 'link' ? 'link' : (tab.view || 'dashboard');
+    if (nextView !== prevView) {
+      state.tabBarPinned = null;
+    }
+
+    if (tab.channel && state.data?.channels?.[tab.channel] && tab.channel !== state.activeChannel) {
+      state.activeChannel = tab.channel;
+      state.settingsChannelKey = tab.channel;
+      state.boardsList = [];
+      state.boardReady = false;
+      initSelectedSeriesForChannel(getActiveChannelData());
+      const prefs = loadJsonStorage(STORAGE_KEY_PREFS, {});
+      prefs.activeChannel = tab.channel;
+      saveJsonStorage(STORAGE_KEY_PREFS, prefs);
+    }
+
+    state.focusMode = false;
+    state.boardFullscreen = false;
+    state.mapFlowFullscreen = false;
+
+    if (tab.kind === 'link') {
+      state.view = 'link';
+      state.activeLinkTab = { ...tab };
+    } else {
+      state.activeLinkTab = null;
+      state.view = nextView;
+      if (state.view !== 'whiteboard') state.boardReady = false;
+
+      if (state.view === 'scripts') {
+        state.selectedDocPath = tab.docPath || null;
+        state.activeVersion = 'principal';
+        state.versionHistory = null;
+        state.versionFetchedKey = '';
+        state.diffDocPath = '';
+        state.diffFromRef = null;
+        state.diffToRef = null;
+        state.diffResult = null;
+        state.selectedRevPreview = null;
+        state.revPreviewContent = null;
+        state.dirtyBody = null;
+        state.dirtyMeta = null;
+        state.hasUnsavedEdits = false;
+        state.commitMessageDraft = '';
+      } else if (state.view === 'whiteboard') {
+        state.activeBoardId = tab.boardId || null;
+        state.boardDirtyScene = null;
+        state.boardActiveScene = null;
+        state.boardSaveStatus = 'saved';
+      } else if (state.view === 'map') {
+        state.mapStyle = tab.mapStyle || 'cards';
+      } else if (state.view === 'settings' && !state.settingsChannelKey) {
+        state.settingsChannelKey = state.activeChannel;
+      }
+    }
+
+    saveTabsToStorage();
+    syncBrowserUrl({ replace: false });
+    updateHeaderChrome();
+    renderCurrentView();
+  }
+
+  function closeTab(tabId) {
+    const idx = state.tabs.findIndex((t) => t.id === tabId);
+    if (idx === -1) return;
+    const wasActive = state.tabs[idx].id === state.activeTabId;
+    state.tabs.splice(idx, 1);
+
+    if (state.tabs.length === 0) {
+      const fresh = makeTabObject({
+        kind: 'studio',
+        channel: state.activeChannel,
+        view: 'dashboard',
+      });
+      state.tabs = [fresh];
+      state.activeTabId = fresh.id;
+      saveTabsToStorage();
+      activateTab(fresh.id);
+      return;
+    }
+
+    if (wasActive) {
+      const nextTab = state.tabs[Math.min(idx, state.tabs.length - 1)];
+      saveTabsToStorage();
+      activateTab(nextTab.id);
+    } else {
+      saveTabsToStorage();
+      renderTabstrip();
+    }
+  }
+
+  function closeOtherTabs(keepTabId) {
+    const keep = state.tabs.find((t) => t.id === keepTabId);
+    if (!keep) return;
+    state.tabs = [keep];
+    saveTabsToStorage();
+    if (state.activeTabId !== keep.id) {
+      activateTab(keep.id);
+    } else {
+      renderTabstrip();
+    }
+  }
+
+  function duplicateTab(tabId) {
+    const src = state.tabs.find((t) => t.id === tabId);
+    if (!src) return;
+    const copy = makeTabObject({ ...src, id: undefined });
+    const idx = state.tabs.findIndex((t) => t.id === tabId);
+    state.tabs.splice(idx + 1, 0, copy);
+    saveTabsToStorage();
+    activateTab(copy.id);
+  }
+
+  function buildLinkContextMarkdown(title, url) {
+    const chData = getActiveChannelData();
+    const ch = chData.channel || {};
+    return [
+      `- **Link:** [${title || url}](${url})`,
+      `- **Canal:** ${ch.name || chData.key} (${ch.handle || chData.key})`,
+      `- **Página no Studio:** ${VIEW_TITLES[state.view] || state.view} (${global.location.href})`,
+    ].join('\n');
+  }
+
+  function buildDocContextMarkdown(doc) {
+    const chData = getActiveChannelData();
+    const ch = chData.channel || {};
+    const urlPath = buildFriendlyUrl(chData.key, 'scripts', doc.path);
+    const fullUrl = global.location.protocol.startsWith('http')
+      ? `${global.location.origin}${urlPath}`
+      : urlPath;
+    return [
+      `### ${doc.meta.titulo}`,
+      `- **Canal:** ${ch.name || chData.key} (${ch.handle || chData.key})`,
+      `- **Arquivo:** \`${doc.path}\``,
+      `- **Série:** ${doc.meta.serie || '—'} | **Status:** ${doc.meta.status || '—'} | **Palavras:** ${doc.stats?.words || 0} (~${doc.stats?.speakMinutes || 1} min)`,
+      `- **URL:** ${fullUrl}`,
+      doc.meta.resumo ? `- **Resumo:** ${doc.meta.resumo}` : null,
+      `- **Versionamento obrigatório:** \`./bin/crom-studio roteiro commit|nova-versao --canal ${chData.key} --arquivo "${doc.path}"\``,
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  function renderExternalLinkTabView(container) {
+    const tab = state.activeLinkTab || state.tabs.find((t) => t.id === state.activeTabId && t.kind === 'link');
+    if (!tab || !tab.externalUrl) {
+      container.innerHTML = `
+        <div class="link-tab-shell">
+          <div class="link-tab-empty-card glass-card">
+            <h2 style="margin:0;">Nenhum link fixado nesta aba</h2>
+            <p style="margin:0; color:var(--text-3);">Clique com o botão direito em qualquer link externo e escolha <strong>Abrir na barra de abas (topo)</strong>.</p>
+            <button type="button" class="btn-sm btn-accent" id="linkTabGoHomeBtn">Voltar para Visão Geral</button>
+          </div>
+        </div>
+      `;
+      document.getElementById('linkTabGoHomeBtn')?.addEventListener('click', () => setView('dashboard'));
+      return;
+    }
+
+    const safeUrl = MD.escapeHtml(tab.externalUrl);
+    const safeTitle = MD.escapeHtml(tab.title || getHostnameLabel(tab.externalUrl));
+    const ytId = extractYouTubeVideoId(tab.externalUrl);
+
+    let stageHtml = '';
+    if (ytId) {
+      stageHtml = `<iframe class="link-tab-embed" src="https://www.youtube.com/embed/${MD.escapeHtml(ytId)}" title="${safeTitle}" allowfullscreen allow="autoplay; encrypted-media; picture-in-picture"></iframe>`;
+    } else if (tab.embedEnabled) {
+      stageHtml = `<iframe class="link-tab-embed" src="${safeUrl}" title="${safeTitle}" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>`;
+    } else {
+      stageHtml = `
+        <div class="link-tab-empty-card">
+          <div style="font-size:32px; opacity:0.8;">↗</div>
+          <h3 style="margin:0; font-size:16px; color:var(--text-1);">${safeTitle}</h3>
+          <div class="link-tab-url">${safeUrl}</div>
+          <p style="max-width:520px; margin:4px 0 8px; font-size:12.5px; color:var(--text-3);">
+            Link fixado na barra superior do Crom YouTube Studio para acesso rápido e cópia de contexto. Alguns sites externos bloqueiam incorporação em iframe.
+          </p>
+          <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center;">
+            <a class="btn-sm btn-accent" href="${safeUrl}" target="_blank" rel="noopener noreferrer">Abrir Externamente ↗</a>
+            <button type="button" class="btn-sm" id="linkTabToggleEmbedBtn">◫ Carregar Prévia Embutida (iframe)</button>
+          </div>
+        </div>
+      `;
+    }
+
+    container.innerHTML = `
+      <div class="link-tab-shell">
+        <div class="link-tab-card">
+          <div class="link-tab-info">
+            <h2 class="link-tab-title">${safeTitle}</h2>
+            <div class="link-tab-url">${safeUrl}</div>
+          </div>
+          <div class="link-tab-actions">
+            <a class="btn-sm btn-accent" href="${safeUrl}" target="_blank" rel="noopener noreferrer">Abrir Externamente ↗</a>
+            <button type="button" class="btn-sm" id="linkTabCopyCtxBtn">📋 Copiar como Contexto</button>
+            <button type="button" class="btn-sm" id="linkTabCopyUrlBtn">🔗 Copiar URL</button>
+            ${!ytId ? `<button type="button" class="btn-sm" id="linkTabEmbedBtn">${tab.embedEnabled ? 'Ocultar Prévia' : '◫ Prévia Embutida'}</button>` : ''}
+            <button type="button" class="btn-sm btn-danger" id="linkTabCloseBtn">✕ Fechar Aba</button>
+          </div>
+        </div>
+        <div class="link-tab-preview-stage">
+          ${stageHtml}
+        </div>
+      </div>
+    `;
+
+    document.getElementById('linkTabCopyCtxBtn')?.addEventListener('click', () => {
+      copyText(buildLinkContextMarkdown(tab.title, tab.externalUrl), 'Contexto do link copiado!');
+    });
+    document.getElementById('linkTabCopyUrlBtn')?.addEventListener('click', () => {
+      copyText(tab.externalUrl, 'URL copiada!');
+    });
+    const toggleEmbed = () => {
+      tab.embedEnabled = !tab.embedEnabled;
+      state.activeLinkTab = { ...tab };
+      const stored = state.tabs.find((t) => t.id === tab.id);
+      if (stored) stored.embedEnabled = tab.embedEnabled;
+      saveTabsToStorage();
+      renderExternalLinkTabView(container);
+    };
+    document.getElementById('linkTabEmbedBtn')?.addEventListener('click', toggleEmbed);
+    document.getElementById('linkTabToggleEmbedBtn')?.addEventListener('click', toggleEmbed);
+    document.getElementById('linkTabCloseBtn')?.addEventListener('click', () => {
+      if (state.activeTabId) closeTab(state.activeTabId);
+      else setView('dashboard');
+    });
+  }
+
+  function closeContextMenu() {
+    const menu = document.getElementById('studioContextMenu');
+    if (menu) menu.classList.add('hidden');
+  }
+
+  function showStudioContextMenu(clientX, clientY, headerLabel, items) {
+    const menu = document.getElementById('studioContextMenu');
+    if (!menu || !items.length) return;
+
+    const itemsHtml = items
+      .map((item, idx) => {
+        if (item.sep) return '<div class="ctx-menu-sep" role="separator"></div>';
+        return `
+          <button type="button" class="ctx-menu-item${item.danger ? ' is-danger' : ''}" data-ctx-idx="${idx}" role="menuitem">
+            <span class="ctx-menu-icon">${MD.escapeHtml(item.icon || '•')}</span>
+            <span class="ctx-menu-label">${MD.escapeHtml(item.label)}</span>
+          </button>
+        `;
+      })
+      .join('');
+
+    menu.innerHTML = `${headerLabel ? `<div class="ctx-menu-head">${MD.escapeHtml(headerLabel)}</div>` : ''}${itemsHtml}`;
+    menu.style.visibility = 'hidden';
+    menu.classList.remove('hidden');
+
+    const rect = menu.getBoundingClientRect();
+    const vw = global.innerWidth || document.documentElement.clientWidth;
+    const vh = global.innerHeight || document.documentElement.clientHeight;
+    const left = Math.max(8, Math.min(clientX, vw - rect.width - 8));
+    const top = Math.max(8, Math.min(clientY, vh - rect.height - 8));
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+    menu.style.visibility = '';
+
+    menu.querySelectorAll('[data-ctx-idx]').forEach((btn) => {
+      btn.onclick = (ev) => {
+        ev.stopPropagation();
+        const item = items[Number(btn.dataset.ctxIdx)];
+        closeContextMenu();
+        if (item && typeof item.action === 'function') item.action();
+      };
+    });
+  }
+
+  function resolveContextTarget(targetEl) {
+    if (!targetEl || !(targetEl instanceof Element)) return null;
+    if (targetEl.closest('input, textarea, select, [contenteditable], #excalidrawFrame')) return null;
+
+    const tabEl = targetEl.closest('.studio-tab[data-tab-id]');
+    if (tabEl) {
+      return { kind: 'tab', tabId: tabEl.dataset.tabId };
+    }
+
+    const navEl = targetEl.closest('#sideNav .nav-item[data-view]');
+    if (navEl) {
+      return { kind: 'nav', view: navEl.dataset.view };
+    }
+
+    const docEl = targetEl.closest(
+      '[data-select-doc], [data-open-doc], [data-open-map-doc], [data-flow-doc], [data-spot-open], [data-drawer-doc], [data-cmd-doc], a[data-rel-md], .kanban-card[data-doc-path], .kanban-card[data-drag-path]'
+    );
+    if (docEl) {
+      let docPath =
+        docEl.dataset.selectDoc ||
+        docEl.dataset.openDoc ||
+        docEl.dataset.openMapDoc ||
+        docEl.dataset.flowDoc ||
+        docEl.dataset.spotOpen ||
+        docEl.dataset.drawerDoc ||
+        docEl.dataset.cmdDoc ||
+        docEl.dataset.docPath ||
+        docEl.dataset.dragPath ||
+        '';
+      if (!docPath && docEl.dataset.relMd) {
+        const activeDoc = getActiveDoc();
+        docPath = resolveRelativeMdPath(activeDoc?.folder, docEl.dataset.relMd) || '';
+      }
+      if (docPath) {
+        return { kind: 'doc', docPath };
+      }
+    }
+
+    const extLink = targetEl.closest('a[href^="http://"], a[href^="https://"]');
+    if (extLink) {
+      return {
+        kind: 'external',
+        url: extLink.href,
+        title: (extLink.getAttribute('title') || extLink.textContent || extLink.href).trim(),
+      };
+    }
+
+    const extCard = targetEl.closest('[data-ext-url]');
+    if (extCard && extCard.dataset.extUrl) {
+      return {
+        kind: 'external',
+        url: extCard.dataset.extUrl,
+        title: extCard.dataset.extTitle || extCard.dataset.extUrl,
+      };
+    }
+
+    return null;
+  }
+
+  function handleStudioContextMenu(e) {
+    const resolved = resolveContextTarget(e.target);
+    if (!resolved) {
+      closeContextMenu();
+      return;
+    }
+
+    e.preventDefault();
+    const chData = getActiveChannelData();
+    const docs = chData.docs || [];
+
+    if (resolved.kind === 'tab') {
+      const tab = state.tabs.find((t) => t.id === resolved.tabId);
+      if (!tab) return;
+      const pres = getTabPresentation(tab);
+      const tabUrl = tab.kind === 'link'
+        ? tab.externalUrl
+        : (global.location.protocol.startsWith('http')
+            ? `${global.location.origin}${buildFriendlyUrl(tab.channel, tab.view, tab.docPath, tab.boardId)}`
+            : buildFriendlyUrl(tab.channel, tab.view, tab.docPath, tab.boardId));
+      const items = [
+        { icon: '⧉', label: 'Duplicar aba', action: () => duplicateTab(tab.id) },
+        {
+          icon: '📋',
+          label: 'Copiar como contexto',
+          action: () => {
+            if (tab.kind === 'link') {
+              copyText(buildLinkContextMarkdown(pres.title, tab.externalUrl), 'Contexto copiado!');
+            } else if (tab.view === 'scripts' && tab.docPath) {
+              const d = state.data?.channels?.[tab.channel]?.docs?.find((x) => x.path === tab.docPath);
+              copyText(d ? buildDocContextMarkdown(d) : `${pres.title} — ${tabUrl}`, 'Contexto copiado!');
+            } else {
+              copyText(`- **Aba:** ${pres.title} (${tab.channel})\n- **URL:** ${tabUrl}`, 'Contexto copiado!');
+            }
+          },
+        },
+        { icon: '🔗', label: 'Copiar link', action: () => copyText(tabUrl, 'Link copiado!') },
+        { sep: true },
+        { icon: '✕', label: 'Fechar aba', danger: true, action: () => closeTab(tab.id) },
+      ];
+      if (state.tabs.length > 1) {
+        items.push({ icon: '✕', label: 'Fechar outras abas', action: () => closeOtherTabs(tab.id) });
+      }
+      showStudioContextMenu(e.clientX, e.clientY, pres.title, items);
+      return;
+    }
+
+    if (resolved.kind === 'doc') {
+      const doc = docs.find((d) => d.path === resolved.docPath);
+      const title = doc?.meta?.titulo || resolved.docPath;
+      const urlPath = buildFriendlyUrl(state.activeChannel, 'scripts', resolved.docPath);
+      const fullUrl = global.location.protocol.startsWith('http')
+        ? `${global.location.origin}${urlPath}`
+        : urlPath;
+
+      const items = [
+        {
+          icon: '↗',
+          label: 'Abrir em nova aba',
+          action: () => {
+            document.querySelectorAll('.modal-backdrop, .drawer-backdrop').forEach((m) => m.classList.add('hidden'));
+            openNewTab({ kind: 'studio', channel: state.activeChannel, view: 'scripts', docPath: resolved.docPath }, { activate: true });
+          },
+        },
+        {
+          icon: '＋',
+          label: 'Abrir em aba (segundo plano)',
+          action: () => {
+            openNewTab({ kind: 'studio', channel: state.activeChannel, view: 'scripts', docPath: resolved.docPath }, { activate: false });
+          },
+        },
+        { sep: true },
+        {
+          icon: '📋',
+          label: 'Copiar como contexto',
+          action: () => {
+            const mdText = doc
+              ? buildDocContextMarkdown(doc)
+              : `- **Arquivo:** \`${resolved.docPath}\`\n- **URL:** ${fullUrl}`;
+            copyText(mdText, 'Contexto Markdown copiado!');
+          },
+        },
+        { icon: '🔗', label: 'Copiar link (URL)', action: () => copyText(fullUrl, 'URL copiada!') },
+        { icon: '📄', label: 'Copiar caminho do arquivo', action: () => copyText(resolved.docPath, 'Caminho copiado!') },
+        { sep: true },
+        {
+          icon: '◈',
+          label: 'Enviar para o Quadro (Excalidraw)',
+          action: () => {
+            document.querySelectorAll('.modal-backdrop, .drawer-backdrop').forEach((m) => m.classList.add('hidden'));
+            if (doc) sendDocToWhiteboard(doc);
+            else showToast('Documento não encontrado neste workspace.');
+          },
+        },
+      ];
+      showStudioContextMenu(e.clientX, e.clientY, title, items);
+      return;
+    }
+
+    if (resolved.kind === 'external') {
+      const cleanTitle = resolved.title.replace(/\s*↗\s*$/, '').trim() || getHostnameLabel(resolved.url);
+      const items = [
+        {
+          icon: '＋',
+          label: 'Abrir na barra de abas (topo)',
+          action: () => {
+            openNewTab(
+              { kind: 'link', channel: state.activeChannel, view: 'link', externalUrl: resolved.url, title: cleanTitle },
+              { activate: true }
+            );
+          },
+        },
+        {
+          icon: '↗',
+          label: 'Abrir no navegador (nova guia)',
+          action: () => global.open(resolved.url, '_blank', 'noopener,noreferrer'),
+        },
+        { sep: true },
+        {
+          icon: '📋',
+          label: 'Copiar como contexto',
+          action: () => copyText(buildLinkContextMarkdown(cleanTitle, resolved.url), 'Contexto do link copiado!'),
+        },
+        { icon: '🔗', label: 'Copiar URL', action: () => copyText(resolved.url, 'URL copiada!') },
+      ];
+      showStudioContextMenu(e.clientX, e.clientY, cleanTitle, items);
+      return;
+    }
+
+    if (resolved.kind === 'nav') {
+      const view = resolved.view;
+      const viewTitle = VIEW_TITLES[view] || view;
+      const urlPath = buildFriendlyUrl(state.activeChannel, view, null, null);
+      const fullUrl = global.location.protocol.startsWith('http')
+        ? `${global.location.origin}${urlPath}`
+        : urlPath;
+      const items = [
+        {
+          icon: '↗',
+          label: 'Abrir página em nova aba',
+          action: () => openNewTab({ kind: 'studio', channel: state.activeChannel, view }, { activate: true }),
+        },
+        {
+          icon: '＋',
+          label: 'Abrir em aba (segundo plano)',
+          action: () => openNewTab({ kind: 'studio', channel: state.activeChannel, view }, { activate: false }),
+        },
+        { sep: true },
+        {
+          icon: '📋',
+          label: 'Copiar como contexto',
+          action: () => copyText(`- **Página:** ${viewTitle} (${chData.channel.name})\n- **URL:** ${fullUrl}`, 'Contexto da página copiado!'),
+        },
+        { icon: '🔗', label: 'Copiar URL amigável', action: () => copyText(fullUrl, 'URL amigável copiada!') },
+      ];
+      showStudioContextMenu(e.clientX, e.clientY, `${viewTitle} • ${chData.channel.name}`, items);
     }
   }
 
@@ -2088,8 +3055,912 @@
   }
 
   /* =========================================================
-     VIEW MAPA DE ROTEIROS (COLORIDO POR STATUS)
+     VIEW MAPA DE ROTEIROS (CARTÕES + FLUXOGRAMA INTERATIVO)
   ========================================================= */
+  const SERIE_FLOW_PALETTE = ['#ec4899', '#38bdf8', '#a855f7', '#f59e0b', '#22d3ee', '#34d399', '#fb7185', '#818cf8'];
+
+  function getSeriesFlowColor(serieName, idx = 0) {
+    return SERIE_META[serieName]?.color || SERIE_FLOW_PALETTE[idx % SERIE_FLOW_PALETTE.length];
+  }
+
+  function detectSequenceChains(docs) {
+    const groups = new Map();
+    for (const d of docs) {
+      const slug = String(d.filename || d.path || '').replace(/\.md$/i, '').toLowerCase();
+      let m = /^(.*?)[-_ ]?(?:parte|part|pt|ep|cap)[-_ ]?(\d+)(?:[-_ ].*)?$/.exec(slug);
+      if (!m) {
+        m = /^(.{3,}?\D)-(\d{1,2})$/.exec(slug);
+      }
+      if (!m) continue;
+      const prefix = m[1].replace(/[-_ ]+$/, '');
+      const num = Number(m[2]);
+      if (!prefix || Number.isNaN(num)) continue;
+      const key = `${d.meta.serie || 'geral'}::${prefix}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push({ doc: d, num });
+    }
+    const edges = [];
+    for (const items of groups.values()) {
+      if (items.length < 2) continue;
+      items.sort((a, b) => a.num - b.num);
+      for (let i = 0; i < items.length - 1; i++) {
+        edges.push({ fromPath: items[i].doc.path, toPath: items[i + 1].doc.path });
+      }
+    }
+    return edges;
+  }
+
+  function renderClusterShapeSvg(cx, cy, r, shapeIdx, color) {
+    const s = shapeIdx % 6;
+    const fill = `${color}26`;
+    const glow = `${color}45`;
+    if (s === 0) {
+      // Octágono
+      const pts = [];
+      for (let i = 0; i < 8; i++) {
+        const a = (Math.PI / 8) + (i * Math.PI) / 4;
+        pts.push(`${(cx + r * Math.cos(a)).toFixed(1)},${(cy + r * Math.sin(a)).toFixed(1)}`);
+      }
+      return `<polygon points="${pts.join(' ')}" fill="${fill}" stroke="${color}" stroke-width="2.2" /><polygon points="${pts.join(' ')}" fill="none" stroke="${glow}" stroke-width="6" opacity="0.25" />`;
+    }
+    if (s === 1) {
+      // Losango
+      const d = r * 1.15;
+      const pts = `${cx},${cy - d} ${cx + d},${cy} ${cx},${cy + d} ${cx - d},${cy}`;
+      return `<polygon points="${pts}" fill="${fill}" stroke="${color}" stroke-width="2.2" />`;
+    }
+    if (s === 2) {
+      // Círculo
+      return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${fill}" stroke="${color}" stroke-width="2.2" /><circle cx="${cx}" cy="${cy}" r="${r + 6}" fill="none" stroke="${glow}" stroke-width="1.2" stroke-dasharray="4 4" />`;
+    }
+    if (s === 3) {
+      // Pílula arredondada
+      const w = r * 2.25;
+      const h = r * 1.45;
+      return `<rect x="${cx - w / 2}" y="${cy - h / 2}" width="${w}" height="${h}" rx="${h / 2}" fill="${fill}" stroke="${color}" stroke-width="2.2" />`;
+    }
+    if (s === 4) {
+      // Squircle
+      const w = r * 1.9;
+      return `<rect x="${cx - w / 2}" y="${cy - w / 2}" width="${w}" height="${w}" rx="18" fill="${fill}" stroke="${color}" stroke-width="2.2" />`;
+    }
+    // Hexágono
+    const pts = [];
+    for (let i = 0; i < 6; i++) {
+      const a = (i * Math.PI) / 3 - Math.PI / 6;
+      pts.push(`${(cx + r * Math.cos(a)).toFixed(1)},${(cy + r * Math.sin(a)).toFixed(1)}`);
+    }
+    return `<polygon points="${pts.join(' ')}" fill="${fill}" stroke="${color}" stroke-width="2.2" />`;
+  }
+
+  function computeFlowLayout(docs, chData, layoutKind) {
+    const seqEdges = detectSequenceChains(docs);
+    const seqSet = new Set(seqEdges.map((e) => `${e.fromPath}=>${e.toPath}`));
+    const groupsMap = new Map();
+    for (const d of docs) {
+      const key = d.meta.serie || 'Sem Série';
+      if (!groupsMap.has(key)) groupsMap.set(key, []);
+      groupsMap.get(key).push(d);
+    }
+    const groups = Array.from(groupsMap.entries()).sort((a, b) => b[1].length - a[1].length);
+
+    if (layoutKind === 'blocks') {
+      const cols = groups.length <= 1 ? 1 : 2;
+      const secPadX = 24;
+      const secPadTop = 46;
+      const secPadBot = 24;
+      const cardW = 216;
+      const cardH = 80;
+      const gapX = 34;
+      const gapY = 26;
+      const maxPerRow = 3;
+      const secGapX = 46;
+      const secGapY = 44;
+
+      const sections = [];
+      const nodes = [];
+      const edges = [];
+      const nodeByPath = new Map();
+
+      const builtSections = groups.map(([serieName, items], gIdx) => {
+        const color = getSeriesFlowColor(serieName, gIdx);
+        const colsInSec = Math.min(maxPerRow, Math.max(1, items.length));
+        const rowsInSec = Math.max(1, Math.ceil(items.length / maxPerRow));
+        const secW = secPadX * 2 + colsInSec * cardW + Math.max(0, colsInSec - 1) * gapX;
+        const secH = secPadTop + secPadBot + rowsInSec * cardH + Math.max(0, rowsInSec - 1) * gapY;
+        return { serieName, items, gIdx, color, secW, secH, colsInSec };
+      });
+
+      const rowHeights = [];
+      const colWidths = new Array(cols).fill(0);
+      builtSections.forEach((sec, idx) => {
+        const c = idx % cols;
+        const r = Math.floor(idx / cols);
+        colWidths[c] = Math.max(colWidths[c], sec.secW);
+        rowHeights[r] = Math.max(rowHeights[r] || 0, sec.secH);
+      });
+
+      const margin = 48;
+      const colXs = [];
+      let curX = margin;
+      for (let c = 0; c < cols; c++) {
+        colXs.push(curX);
+        curX += colWidths[c] + secGapX;
+      }
+      const rowYs = [];
+      let curY = margin;
+      for (let r = 0; r < rowHeights.length; r++) {
+        rowYs.push(curY);
+        curY += rowHeights[r] + secGapY;
+      }
+
+      builtSections.forEach((sec, idx) => {
+        const c = idx % cols;
+        const r = Math.floor(idx / cols);
+        const sx = colXs[c];
+        const sy = rowYs[r];
+        const secNum = idx + 1;
+
+        sections.push({
+          id: `sec-${secNum}`,
+          x: sx,
+          y: sy,
+          w: sec.secW,
+          h: sec.secH,
+          color: sec.color,
+          label: `${secNum}.0 ${sec.serieName}`,
+          count: sec.items.length,
+        });
+
+        sec.items.forEach((doc, itemIdx) => {
+          const ic = itemIdx % maxPerRow;
+          const ir = Math.floor(itemIdx / maxPerRow);
+          const nx = sx + secPadX + ic * (cardW + gapX);
+          const ny = sy + secPadTop + ir * (cardH + gapY);
+          const node = {
+            doc,
+            x: nx,
+            y: ny,
+            w: cardW,
+            h: cardH,
+            badge: `${secNum}.${itemIdx + 1}`,
+            badgeColor: sec.color,
+          };
+          nodes.push(node);
+          nodeByPath.set(doc.path, node);
+
+          if (ic > 0) {
+            const prevNode = nodes[nodes.length - 2];
+            if (prevNode && !seqSet.has(`${prevNode.doc.path}=>${doc.path}`)) {
+              edges.push({
+                kind: 'elbow',
+                fromX: prevNode.x + prevNode.w,
+                fromY: prevNode.y + prevNode.h / 2,
+                toX: node.x,
+                toY: node.y + node.h / 2,
+                color: `${sec.color}99`,
+                dashed: true,
+              });
+            }
+          }
+        });
+      });
+
+      for (const se of seqEdges) {
+        const a = nodeByPath.get(se.fromPath);
+        const b = nodeByPath.get(se.toPath);
+        if (a && b) {
+          edges.push({
+            kind: 'sequence',
+            fromX: a.x + a.w,
+            fromY: a.y + a.h / 2,
+            toX: b.x,
+            toY: b.y + b.h / 2,
+            color: '#f59e0b',
+            dashed: true,
+          });
+        }
+      }
+
+      const canvasW = Math.max(760, curX - secGapX + margin);
+      const canvasH = Math.max(520, curY - secGapY + margin);
+      return { layout: 'blocks', width: canvasW, height: canvasH, center: null, rings: [], hubs: [], sections, stageHeaders: [], nodes, edges };
+    }
+
+    if (layoutKind === 'pipeline') {
+      const stages = [
+        { key: 'ideia', label: 'Ideia' },
+        { key: 'pesquisa', label: 'Pesquisa' },
+        { key: 'roteiro', label: 'Roteiro' },
+        { key: 'gravando', label: 'Gravando' },
+        { key: 'edicao', label: 'Edição' },
+        { key: 'publicado', label: 'Publicado' },
+      ];
+      const knownKeys = new Set(stages.map((s) => s.key));
+      const extraDocs = docs.filter((d) => !knownKeys.has(d.meta.status));
+      if (extraDocs.length) stages.push({ key: 'outros', label: 'Docs & Outros' });
+
+      const colW = 224;
+      const colGap = 46;
+      const cardW = 204;
+      const cardH = 74;
+      const cardGapY = 18;
+      const marginX = 48;
+      const headY = 48;
+      const headH = 44;
+      const startCardsY = headY + headH + 34;
+
+      const stageHeaders = [];
+      const nodes = [];
+      const edges = [];
+      const nodeByPath = new Map();
+      let maxCards = 1;
+
+      stages.forEach((st, colIdx) => {
+        const colDocs = st.key === 'outros'
+          ? extraDocs
+          : docs.filter((d) => (d.meta.status || 'ideia') === st.key);
+        maxCards = Math.max(maxCards, colDocs.length);
+        const vis = STATUS_VISUAL[st.key] || STATUS_VISUAL.referencia;
+        const cx = marginX + colIdx * (colW + colGap);
+
+        stageHeaders.push({
+          key: st.key,
+          label: st.label,
+          count: colDocs.length,
+          x: cx,
+          y: headY,
+          w: colW,
+          h: headH,
+          color: vis.color,
+          bg: vis.bg,
+          border: vis.border,
+        });
+
+        if (colIdx > 0) {
+          const prevHead = stageHeaders[colIdx - 1];
+          edges.push({
+            kind: 'stage',
+            fromX: prevHead.x + prevHead.w,
+            fromY: prevHead.y + prevHead.h / 2,
+            toX: cx,
+            toY: headY + headH / 2,
+            color: 'rgba(255,255,255,0.42)',
+            dashed: false,
+          });
+        }
+
+        const spineX = cx + 10;
+        colDocs.forEach((doc, rowIdx) => {
+          const nx = cx + 20;
+          const ny = startCardsY + rowIdx * (cardH + cardGapY);
+          const sIdx = groups.findIndex(([name]) => name === doc.meta.serie);
+          const badgeColor = getSeriesFlowColor(doc.meta.serie, Math.max(0, sIdx));
+          const node = {
+            doc,
+            x: nx,
+            y: ny,
+            w: cardW,
+            h: cardH,
+            badge: doc.meta.serie || 'Geral',
+            badgeColor,
+          };
+          nodes.push(node);
+          nodeByPath.set(doc.path, node);
+
+          edges.push({
+            kind: 'branch',
+            fromX: spineX,
+            fromY: headY + headH,
+            toX: nx,
+            toY: ny + cardH / 2,
+            color: `${vis.color}88`,
+            dashed: false,
+          });
+        });
+      });
+
+      for (const se of seqEdges) {
+        const a = nodeByPath.get(se.fromPath);
+        const b = nodeByPath.get(se.toPath);
+        if (a && b) {
+          edges.push({
+            kind: 'sequence',
+            fromX: a.x + a.w,
+            fromY: a.y + a.h / 2,
+            toX: b.x,
+            toY: b.y + b.h / 2,
+            color: '#f59e0b',
+            dashed: true,
+          });
+        }
+      }
+
+      const canvasW = marginX * 2 + stages.length * colW + Math.max(0, stages.length - 1) * colGap;
+      const canvasH = Math.max(540, startCardsY + maxCards * (cardH + cardGapY) + 60);
+      return { layout: 'pipeline', width: canvasW, height: canvasH, center: null, rings: [], hubs: [], sections: [], stageHeaders, nodes, edges };
+    }
+
+    // Default: 'clusters' — Constelação (Clusters)
+    const cardW = 186;
+    const cardH = 58;
+    const clusters = groups.map(([serieName, items], idx) => {
+      const n = items.length;
+      const childRx = Math.max(158, (n * 195) / (2 * Math.PI));
+      const childRy = Math.max(126, (n * 135) / (2 * Math.PI));
+      const outerR = Math.max(childRx, childRy) + 108;
+      return {
+        serieName,
+        items,
+        idx,
+        color: getSeriesFlowColor(serieName, idx),
+        shapeIdx: idx,
+        childRx,
+        childRy,
+        outerR,
+      };
+    });
+
+    const totalArc = clusters.reduce((acc, c) => acc + c.outerR * 2 + 72, 0);
+    const maxClusterR = clusters.reduce((m, c) => Math.max(m, c.outerR), 220);
+    const hubOrbitR = clusters.length <= 1
+      ? 260
+      : Math.max(400, maxClusterR + 170, totalArc / (2 * Math.PI));
+
+    const worldHalf = Math.ceil(hubOrbitR + maxClusterR + 180);
+    const cx = worldHalf;
+    const cy = worldHalf;
+    const canvasSize = worldHalf * 2;
+
+    const hubs = [];
+    const nodes = [];
+    const edges = [];
+    const nodeByPath = new Map();
+
+    let angleCursor = -Math.PI / 2;
+    clusters.forEach((cl) => {
+      const wedge = clusters.length === 1
+        ? 0
+        : ((cl.outerR * 2 + 72) / (totalArc || 1)) * Math.PI * 2;
+      const theta = clusters.length === 1 ? -Math.PI / 4 : angleCursor + wedge / 2;
+      angleCursor += wedge;
+
+      const hx = cx + hubOrbitR * Math.cos(theta);
+      const hy = cy + hubOrbitR * Math.sin(theta);
+      const hubR = 56;
+      hubs.push({
+        serieName: cl.serieName,
+        count: cl.items.length,
+        x: hx,
+        y: hy,
+        r: hubR,
+        shapeIdx: cl.shapeIdx,
+        color: cl.color,
+      });
+
+      edges.push({
+        kind: 'curve',
+        fromX: cx,
+        fromY: cy,
+        toX: hx,
+        toY: hy,
+        color: cl.color,
+        width: 2.2,
+      });
+
+      const localNodes = cl.items.map((doc, i) => {
+        const a = (i / Math.max(1, cl.items.length)) * Math.PI * 2 - Math.PI / 2;
+        const nx = hx + cl.childRx * Math.cos(a) - cardW / 2;
+        const ny = hy + cl.childRy * Math.sin(a) - cardH / 2;
+        return {
+          doc,
+          x: nx,
+          y: ny,
+          w: cardW,
+          h: cardH,
+          badge: STATUS_VISUAL[doc.meta.status]?.label || doc.meta.status || 'Ideia',
+          badgeColor: STATUS_VISUAL[doc.meta.status]?.color || cl.color,
+        };
+      });
+
+      // Separação determinística AABB para garantir 0 sobreposições entre cards e com o hub
+      const pad = 16;
+      for (let iter = 0; iter < 32; iter++) {
+        for (let i = 0; i < localNodes.length; i++) {
+          const a = localNodes[i];
+          // Manter longe do próprio hub da série
+          const acx = a.x + a.w / 2;
+          const acy = a.y + a.h / 2;
+          const dxH = acx - hx;
+          const dyH = acy - hy;
+          const distH = Math.hypot(dxH, dyH) || 1;
+          const minHubDist = hubR + 96;
+          if (distH < minHubDist) {
+            const push = minHubDist - distH;
+            a.x += (dxH / distH) * push;
+            a.y += (dyH / distH) * push;
+          }
+          for (let j = i + 1; j < localNodes.length; j++) {
+            const b = localNodes[j];
+            const ox = Math.min(a.x + a.w + pad, b.x + b.w + pad) - Math.max(a.x, b.x);
+            const oy = Math.min(a.y + a.h + pad, b.y + b.h + pad) - Math.max(a.y, b.y);
+            if (ox > 0 && oy > 0) {
+              if (ox < oy) {
+                const dir = a.x <= b.x ? -1 : 1;
+                a.x += dir * (ox / 2);
+                b.x -= dir * (ox / 2);
+              } else {
+                const dir = a.y <= b.y ? -1 : 1;
+                a.y += dir * (oy / 2);
+                b.y -= dir * (oy / 2);
+              }
+            }
+          }
+        }
+      }
+
+      for (const node of localNodes) {
+        nodes.push(node);
+        nodeByPath.set(node.doc.path, node);
+        edges.push({
+          kind: 'curve',
+          fromX: hx,
+          fromY: hy,
+          toX: node.x + node.w / 2,
+          toY: node.y + node.h / 2,
+          color: `${cl.color}88`,
+          width: 1.4,
+        });
+      }
+    });
+
+    for (const se of seqEdges) {
+      const a = nodeByPath.get(se.fromPath);
+      const b = nodeByPath.get(se.toPath);
+      if (a && b) {
+        edges.push({
+          kind: 'sequence',
+          fromX: a.x + a.w / 2,
+          fromY: a.y + a.h / 2,
+          toX: b.x + b.w / 2,
+          toY: b.y + b.h / 2,
+          color: '#f59e0b',
+          dashed: true,
+        });
+      }
+    }
+
+    const ch = chData.channel || {};
+    return {
+      layout: 'clusters',
+      width: canvasSize,
+      height: canvasSize,
+      center: { x: cx, y: cy, name: ch.name || chData.key, sub: `${docs.length} roteiros` },
+      rings: [Math.round(hubOrbitR * 0.52), Math.round(hubOrbitR), Math.round(hubOrbitR + maxClusterR * 0.68)],
+      hubs,
+      sections: [],
+      stageHeaders: [],
+      nodes,
+      edges,
+    };
+  }
+
+  function renderFlowchartSvgAndNodes(model) {
+    const svgParts = [];
+    svgParts.push(`
+      <defs>
+        <marker id="flowArrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0,1 L7,4 L0,7 Z" fill="rgba(255,255,255,0.5)" />
+        </marker>
+        <marker id="flowArrowSeq" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto">
+          <path d="M0,1 L7,4 L0,7 Z" fill="#f59e0b" />
+        </marker>
+      </defs>
+    `);
+
+    if (model.center && model.rings.length) {
+      for (const r of model.rings) {
+        svgParts.push(
+          `<circle cx="${model.center.x}" cy="${model.center.y}" r="${r}" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="1" stroke-dasharray="6 8" />`
+        );
+      }
+    }
+
+    for (const sec of model.sections) {
+      svgParts.push(
+        `<rect x="${sec.x}" y="${sec.y}" width="${sec.w}" height="${sec.h}" rx="16" fill="rgba(16,18,29,0.55)" stroke="${sec.color}66" stroke-width="1.5" stroke-dasharray="7 5" />`
+      );
+    }
+
+    for (const edge of model.edges) {
+      if (edge.kind === 'curve') {
+        const dx = (edge.toX - edge.fromX) * 0.45;
+        const d = `M ${edge.fromX.toFixed(1)} ${edge.fromY.toFixed(1)} C ${(edge.fromX + dx).toFixed(1)} ${edge.fromY.toFixed(1)}, ${(edge.toX - dx).toFixed(1)} ${edge.toY.toFixed(1)}, ${edge.toX.toFixed(1)} ${edge.toY.toFixed(1)}`;
+        svgParts.push(`<path d="${d}" fill="none" stroke="${edge.color}" stroke-width="${edge.width || 1.5}" />`);
+      } else if (edge.kind === 'branch') {
+        const d = `M ${edge.fromX.toFixed(1)} ${edge.fromY.toFixed(1)} L ${edge.fromX.toFixed(1)} ${edge.toY.toFixed(1)} L ${edge.toX.toFixed(1)} ${edge.toY.toFixed(1)}`;
+        svgParts.push(`<path d="${d}" fill="none" stroke="${edge.color}" stroke-width="1.5" />`);
+      } else if (edge.kind === 'stage') {
+        svgParts.push(
+          `<line x1="${edge.fromX.toFixed(1)}" y1="${edge.fromY.toFixed(1)}" x2="${(edge.toX - 4).toFixed(1)}" y2="${edge.toY.toFixed(1)}" stroke="${edge.color}" stroke-width="1.8" marker-end="url(#flowArrow)" />`
+        );
+      } else {
+        const midX = (edge.fromX + edge.toX) / 2;
+        const d = `M ${edge.fromX.toFixed(1)} ${edge.fromY.toFixed(1)} L ${midX.toFixed(1)} ${edge.fromY.toFixed(1)} L ${midX.toFixed(1)} ${edge.toY.toFixed(1)} L ${edge.toX.toFixed(1)} ${edge.toY.toFixed(1)}`;
+        svgParts.push(
+          `<path d="${d}" fill="none" stroke="${edge.color}" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#flowArrowSeq)" />`
+        );
+      }
+    }
+
+    for (const hub of model.hubs) {
+      svgParts.push(renderClusterShapeSvg(hub.x, hub.y, hub.r, hub.shapeIdx, hub.color));
+    }
+
+    const centerHtml = model.center
+      ? `
+        <div class="map-flow-center" style="left:${model.center.x}px; top:${model.center.y}px;">
+          <div class="map-flow-center-name">${MD.escapeHtml(model.center.name)}</div>
+          <div class="map-flow-center-sub">${MD.escapeHtml(model.center.sub)}</div>
+        </div>
+      `
+      : '';
+
+    const hubsHtml = model.hubs
+      .map(
+        (h) => `
+          <div class="map-flow-hub" style="left:${h.x}px; top:${h.y}px; width:${h.r * 2}px; height:${h.r * 2}px;">
+            <span class="map-flow-hub-title">${MD.escapeHtml(h.serieName)}</span>
+            <span class="map-flow-hub-count">${h.count} .md</span>
+          </div>
+        `
+      )
+      .join('');
+
+    const sectionsHtml = model.sections
+      .map(
+        (s) => `
+          <div class="map-flow-section-label" style="left:${s.x + 14}px; top:${s.y + 10}px; background:${s.color}28; border-color:${s.color}66;">
+            <span>${MD.escapeHtml(s.label)}</span>
+            <span style="opacity:0.75; font-family:var(--font-mono); font-size:10px;">(${s.count})</span>
+          </div>
+        `
+      )
+      .join('');
+
+    const stagesHtml = model.stageHeaders
+      .map(
+        (sh) => `
+          <div class="map-flow-stage-head" style="left:${sh.x}px; top:${sh.y}px; width:${sh.w}px; height:${sh.h}px; --st-color:${sh.color}; --st-border:${sh.border};">
+            <span>${MD.escapeHtml(sh.label)}</span>
+            <span class="kanban-count">${sh.count}</span>
+          </div>
+        `
+      )
+      .join('');
+
+    const nodesHtml = model.nodes
+      .map((n) => {
+        const d = n.doc;
+        const st = d.meta.status || 'ideia';
+        const vis = STATUS_VISUAL[st] || STATUS_VISUAL.ideia;
+        return `
+          <button
+            type="button"
+            class="map-flow-node"
+            data-flow-doc="${MD.escapeHtml(d.path)}"
+            style="left:${Math.round(n.x)}px; top:${Math.round(n.y)}px; width:${n.w}px; height:${n.h}px; --st-color:${vis.color};"
+          >
+            <div class="mfn-top">
+              <span class="mfn-badge" style="background:${n.badgeColor};">${MD.escapeHtml(n.badge)}</span>
+              <span class="mfn-status-dot" style="background:${vis.color};" title="${MD.escapeHtml(vis.label)}"></span>
+            </div>
+            <div class="mfn-title">${MD.escapeHtml(d.meta.titulo)}</div>
+            <div class="mfn-meta">
+              <span>${MD.escapeHtml(vis.label)}</span>
+              <span>${formatNumber(d.stats?.words || 0)} pal.</span>
+            </div>
+          </button>
+        `;
+      })
+      .join('');
+
+    return `
+      <div class="map-flow-canvas" id="mapFlowCanvas" style="width:${model.width}px; height:${model.height}px; transform:translate(${state.mapFlowPanX}px, ${state.mapFlowPanY}px) scale(${state.mapFlowZoom});">
+        <svg class="map-flow-svg" width="${model.width}" height="${model.height}" viewBox="0 0 ${model.width} ${model.height}">
+          ${svgParts.join('')}
+        </svg>
+        ${sectionsHtml}
+        ${stagesHtml}
+        ${centerHtml}
+        ${hubsHtml}
+        ${nodesHtml}
+      </div>
+    `;
+  }
+
+  function convertFlowModelToExcalidrawElements(model) {
+    const elements = [];
+    const now = Date.now();
+    let seedBase = 1000;
+    const nextSeed = () => (seedBase += 79);
+    const uid = (prefix) => `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
+
+    const addRectWithText = ({ id, x, y, w, h, strokeColor, bgColor, strokeStyle = 'solid', roundness = { type: 3 }, text, fontSize = 14, textColor = '#1e1e1e' }) => {
+      const rectId = id || uid('rect');
+      const textId = uid('txt');
+      elements.push({
+        id: rectId,
+        type: 'rectangle',
+        x: Math.round(x),
+        y: Math.round(y),
+        width: Math.round(w),
+        height: Math.round(h),
+        angle: 0,
+        strokeColor,
+        backgroundColor: bgColor,
+        fillStyle: 'solid',
+        strokeWidth: 2,
+        strokeStyle,
+        roughness: 0,
+        opacity: 100,
+        groupIds: [],
+        frameId: null,
+        roundness,
+        seed: nextSeed(),
+        version: 1,
+        versionNonce: nextSeed(),
+        isDeleted: false,
+        boundElements: text ? [{ id: textId, type: 'text' }] : [],
+        updated: now,
+        link: null,
+        locked: false,
+      });
+      if (text) {
+        elements.push({
+          id: textId,
+          type: 'text',
+          x: Math.round(x + 10),
+          y: Math.round(y + h / 2 - fontSize * 0.7),
+          width: Math.max(40, Math.round(w - 20)),
+          height: Math.round(fontSize * 1.5),
+          angle: 0,
+          strokeColor: textColor,
+          backgroundColor: 'transparent',
+          fillStyle: 'solid',
+          strokeWidth: 1,
+          strokeStyle: 'solid',
+          roughness: 0,
+          opacity: 100,
+          groupIds: [],
+          frameId: null,
+          roundness: null,
+          seed: nextSeed(),
+          version: 1,
+          versionNonce: nextSeed(),
+          isDeleted: false,
+          boundElements: [],
+          updated: now,
+          link: null,
+          locked: false,
+          text,
+          fontSize,
+          fontFamily: 1,
+          textAlign: 'center',
+          verticalAlign: 'middle',
+          containerId: rectId,
+          originalText: text,
+          autoResize: true,
+          lineHeight: 1.25,
+        });
+      }
+      return rectId;
+    };
+
+    for (const sec of model.sections) {
+      addRectWithText({
+        x: sec.x,
+        y: sec.y,
+        w: sec.w,
+        h: sec.h,
+        strokeColor: sec.color,
+        bgColor: 'transparent',
+        strokeStyle: 'dashed',
+      });
+      elements.push({
+        id: uid('seclbl'),
+        type: 'text',
+        x: Math.round(sec.x + 14),
+        y: Math.round(sec.y + 12),
+        width: 240,
+        height: 22,
+        angle: 0,
+        strokeColor: sec.color,
+        backgroundColor: 'transparent',
+        fillStyle: 'solid',
+        strokeWidth: 1,
+        strokeStyle: 'solid',
+        roughness: 0,
+        opacity: 100,
+        groupIds: [],
+        frameId: null,
+        roundness: null,
+        seed: nextSeed(),
+        version: 1,
+        versionNonce: nextSeed(),
+        isDeleted: false,
+        boundElements: [],
+        updated: now,
+        link: null,
+        locked: false,
+        text: sec.label,
+        fontSize: 16,
+        fontFamily: 1,
+        textAlign: 'left',
+        verticalAlign: 'top',
+        containerId: null,
+        originalText: sec.label,
+        autoResize: true,
+        lineHeight: 1.25,
+      });
+    }
+
+    for (const sh of model.stageHeaders) {
+      addRectWithText({
+        x: sh.x,
+        y: sh.y,
+        w: sh.w,
+        h: sh.h,
+        strokeColor: sh.color,
+        bgColor: '#eef2fa',
+        text: `${sh.label} (${sh.count})`,
+        fontSize: 15,
+      });
+    }
+
+    if (model.center) {
+      addRectWithText({
+        x: model.center.x - 95,
+        y: model.center.y - 34,
+        w: 190,
+        h: 68,
+        strokeColor: '#e12d78',
+        bgColor: '#f8edf5',
+        text: `${model.center.name}\n${model.center.sub}`,
+        fontSize: 14,
+      });
+    }
+
+    for (const hub of model.hubs) {
+      addRectWithText({
+        x: hub.x - 64,
+        y: hub.y - 32,
+        w: 128,
+        h: 64,
+        strokeColor: hub.color,
+        bgColor: '#eef2fa',
+        text: `${hub.serieName}\n(${hub.count})`,
+        fontSize: 13,
+      });
+    }
+
+    for (const n of model.nodes) {
+      const st = n.doc.meta.status || 'ideia';
+      const vis = STATUS_VISUAL[st] || STATUS_VISUAL.ideia;
+      const shortTitle = n.doc.meta.titulo.length > 42
+        ? `${n.doc.meta.titulo.slice(0, 39)}...`
+        : n.doc.meta.titulo;
+      addRectWithText({
+        x: n.x,
+        y: n.y,
+        w: n.w,
+        h: n.h,
+        strokeColor: vis.color,
+        bgColor: '#f0f4fc',
+        text: `${shortTitle}\n[${vis.label}]`,
+        fontSize: 13,
+      });
+    }
+
+    for (const edge of model.edges) {
+      const dx = edge.toX - edge.fromX;
+      const dy = edge.toY - edge.fromY;
+      elements.push({
+        id: uid('arr'),
+        type: 'arrow',
+        x: Math.round(edge.fromX),
+        y: Math.round(edge.fromY),
+        width: Math.max(1, Math.abs(Math.round(dx))),
+        height: Math.max(1, Math.abs(Math.round(dy))),
+        angle: 0,
+        strokeColor: edge.kind === 'sequence' ? '#f59e0b' : '#64748b',
+        backgroundColor: 'transparent',
+        fillStyle: 'solid',
+        strokeWidth: edge.kind === 'sequence' ? 2 : 1.5,
+        strokeStyle: edge.dashed ? 'dashed' : 'solid',
+        roughness: 0,
+        opacity: 100,
+        groupIds: [],
+        frameId: null,
+        roundness: { type: 2 },
+        seed: nextSeed(),
+        version: 1,
+        versionNonce: nextSeed(),
+        isDeleted: false,
+        boundElements: [],
+        updated: now,
+        link: null,
+        locked: false,
+        points: [[0, 0], [Math.round(dx), Math.round(dy)]],
+        lastCommittedPoint: null,
+        startBinding: null,
+        endBinding: null,
+        startArrowhead: null,
+        endArrowhead: 'arrow',
+      });
+    }
+
+    return elements;
+  }
+
+  async function exportFlowchartToBoard(model, chData) {
+    if (!state.serverMode) {
+      showToast('Exportar fluxograma para o Quadro requer o servidor local rodando.');
+      return;
+    }
+    const layoutLabels = { clusters: 'Constelação', blocks: 'User Flow', pipeline: 'Pipeline' };
+    const chName = chData.channel?.name || chData.key;
+    const title = `Mapa ${chName} — ${layoutLabels[state.mapFlowLayout] || 'Fluxograma'}`;
+    const elements = convertFlowModelToExcalidrawElements(model);
+    try {
+      const res = await fetch('/api/boards', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channel: chData.key,
+          title,
+          elements,
+          appState: { viewBackgroundColor: '#ffffff', theme: 'dark', gridSize: 20 },
+          files: {},
+          preferredMode: 'nodes',
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Erro ao exportar fluxograma');
+      state.boardsList = json.boards || [];
+      if (json.state) state.data = normalizePayload(json.state);
+      state.mapFlowFullscreen = false;
+      setView('whiteboard', null, { boardId: json.board.id });
+      showToast(`Fluxograma aberto em "${json.board.title}"!`);
+    } catch (err) {
+      showToast(err.message);
+    }
+  }
+
+  function applyFlowViewportTransform(viewport, model) {
+    const canvas = document.getElementById('mapFlowCanvas');
+    if (canvas) {
+      canvas.style.transform = `translate(${state.mapFlowPanX}px, ${state.mapFlowPanY}px) scale(${state.mapFlowZoom})`;
+    }
+    const resetBtn = document.getElementById('mapFlowZoomResetBtn');
+    if (resetBtn) resetBtn.textContent = `${Math.round(state.mapFlowZoom * 100)}%`;
+    if (viewport && model && !canvas) {
+      viewport.dataset.modelReady = '1';
+    }
+  }
+
+  function fitFlowchartToViewport(model) {
+    const vp = document.getElementById('mapFlowViewport');
+    if (!vp || !model) return;
+    const vw = vp.clientWidth || 900;
+    const vh = vp.clientHeight || 540;
+    const fitZoom = Math.min(1, Math.max(0.32, Math.min((vw - 48) / model.width, (vh - 48) / model.height)));
+    state.mapFlowZoom = Number(fitZoom.toFixed(2));
+    state.mapFlowPanX = Math.round((vw - model.width * state.mapFlowZoom) / 2);
+    state.mapFlowPanY = Math.round((vh - model.height * state.mapFlowZoom) / 2);
+    applyFlowViewportTransform(vp, model);
+  }
+
   function renderMapView(container) {
     const chData = getActiveChannelData();
     const docsAll = chData.docs || [];
@@ -2177,8 +4048,39 @@
     };
 
     let bodyHtml = '';
+    let flowModel = null;
+
     if (!filteredDocs.length) {
       bodyHtml = `<div class="panel" style="padding:36px; text-align:center; color:var(--text-3);">Nenhum roteiro encontrado com esses filtros.</div>`;
+    } else if (state.mapStyle === 'flowchart') {
+      flowModel = computeFlowLayout(filteredDocs, chData, state.mapFlowLayout);
+      bodyHtml = `
+        <div class="map-flow-shell${state.mapFlowFullscreen ? ' is-flow-fullscreen' : ''}" id="mapFlowShell">
+          <div class="map-flow-toolbar">
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <div class="mode-switch" id="mapFlowLayoutSwitch">
+                <button type="button" class="${state.mapFlowLayout === 'clusters' ? 'active' : ''}" data-flow-layout="clusters">Constelação (Clusters)</button>
+                <button type="button" class="${state.mapFlowLayout === 'blocks' ? 'active' : ''}" data-flow-layout="blocks">User Flow (Blocos)</button>
+                <button type="button" class="${state.mapFlowLayout === 'pipeline' ? 'active' : ''}" data-flow-layout="pipeline">Pipeline (Etapas)</button>
+              </div>
+              <div class="zoom-group" title="Zoom do fluxograma">
+                <button type="button" id="mapFlowZoomOutBtn">-</button>
+                <button type="button" id="mapFlowZoomResetBtn">${Math.round(state.mapFlowZoom * 100)}%</button>
+                <button type="button" id="mapFlowZoomInBtn">+</button>
+                <button type="button" id="mapFlowFitBtn">Ajustar</button>
+              </div>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+              <button type="button" class="btn-sm" id="mapFlowFullscreenBtn">${state.mapFlowFullscreen ? '✕ Sair Tela Cheia' : '⛶ Tela Cheia'}</button>
+              <button type="button" class="btn-sm btn-accent" id="mapExportToBoardBtn">✎ Abrir no Quadro (Excalidraw)</button>
+            </div>
+          </div>
+          <div class="map-flow-viewport" id="mapFlowViewport">
+            ${renderFlowchartSvgAndNodes(flowModel)}
+          </div>
+          <div class="map-flow-tooltip hidden" id="mapFlowTooltip"></div>
+        </div>
+      `;
     } else if (state.mapGroupBy === 'mosaic') {
       const sorted = [...filteredDocs].sort((a, b) => {
         const ia = statusOrder.indexOf(a.meta.status);
@@ -2237,13 +4139,14 @@
         <div class="section-subhead" style="margin:0;">
           <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
             <div class="mode-switch" id="mapGroupSwitch">
-              <button type="button" class="${state.mapGroupBy === 'serie' ? 'active' : ''}" data-map-group="serie">Por Série</button>
-              <button type="button" class="${state.mapGroupBy === 'mosaic' ? 'active' : ''}" data-map-group="mosaic">Mosaico por Status</button>
-              <button type="button" class="${state.mapGroupBy === 'folder' ? 'active' : ''}" data-map-group="folder">Por Pasta</button>
+              <button type="button" class="${state.mapStyle === 'cards' && state.mapGroupBy === 'serie' ? 'active' : ''}" data-map-group="serie">Por Série</button>
+              <button type="button" class="${state.mapStyle === 'cards' && state.mapGroupBy === 'mosaic' ? 'active' : ''}" data-map-group="mosaic">Mosaico por Status</button>
+              <button type="button" class="${state.mapStyle === 'cards' && state.mapGroupBy === 'folder' ? 'active' : ''}" data-map-group="folder">Por Pasta</button>
             </div>
             <input type="search" class="search-box-sm" id="mapSearchInput" placeholder="Buscar no mapa..." value="${MD.escapeHtml(state.mapSearch)}" style="width:220px; margin:0; height:32px;">
           </div>
           <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <button type="button" class="btn-sm${state.mapStyle === 'flowchart' ? ' btn-accent' : ''}" id="mapStyleToggleBtn">${state.mapStyle === 'flowchart' ? '▦ Estilo: Cartões' : '◈ Estilo: Fluxograma'}</button>
             <button type="button" class="btn-sm" id="mapHideMetaBtn">${state.mapHideMeta ? 'Mostrar Docs/Templates' : 'Ocultar Docs/Templates'}</button>
             <button type="button" class="btn-sm btn-accent" id="mapNewDocBtn">+ Novo Roteiro</button>
           </div>
@@ -2257,10 +4160,26 @@
 
     container.querySelectorAll('#mapGroupSwitch button').forEach((btn) => {
       btn.onclick = () => {
+        state.mapStyle = 'cards';
         state.mapGroupBy = btn.dataset.mapGroup;
+        state.mapFlowFullscreen = false;
+        syncActiveTabFromState();
+        updateHeaderChrome();
         renderMapView(container);
       };
     });
+
+    const styleToggleBtn = document.getElementById('mapStyleToggleBtn');
+    if (styleToggleBtn) {
+      styleToggleBtn.onclick = () => {
+        state.mapStyle = state.mapStyle === 'flowchart' ? 'cards' : 'flowchart';
+        state.mapFlowFullscreen = false;
+        state.mapFlowAutoFitKey = '';
+        syncActiveTabFromState();
+        updateHeaderChrome();
+        renderMapView(container);
+      };
+    }
 
     const mapSearchEl = document.getElementById('mapSearchInput');
     if (mapSearchEl) {
@@ -2297,6 +4216,767 @@
     container.querySelectorAll('[data-open-map-doc]').forEach((card) => {
       card.onclick = () => setView('scripts', card.dataset.openMapDoc);
     });
+
+    if (flowModel) {
+      const fitKey = `${chData.key}::${state.mapFlowLayout}::${filteredDocs.length}`;
+      if (state.mapFlowAutoFitKey !== fitKey) {
+        state.mapFlowAutoFitKey = fitKey;
+        requestAnimationFrame(() => fitFlowchartToViewport(flowModel));
+      }
+
+      container.querySelectorAll('#mapFlowLayoutSwitch button').forEach((btn) => {
+        btn.onclick = () => {
+          state.mapFlowLayout = btn.dataset.flowLayout;
+          state.mapFlowAutoFitKey = '';
+          renderMapView(container);
+        };
+      });
+
+      const zoomStep = (delta) => {
+        state.mapFlowZoom = Math.min(2.2, Math.max(0.32, Number((state.mapFlowZoom + delta).toFixed(2))));
+        applyFlowViewportTransform(document.getElementById('mapFlowViewport'), flowModel);
+      };
+      document.getElementById('mapFlowZoomOutBtn')?.addEventListener('click', () => zoomStep(-0.15));
+      document.getElementById('mapFlowZoomInBtn')?.addEventListener('click', () => zoomStep(0.15));
+      document.getElementById('mapFlowZoomResetBtn')?.addEventListener('click', () => {
+        state.mapFlowZoom = 1;
+        applyFlowViewportTransform(document.getElementById('mapFlowViewport'), flowModel);
+      });
+      document.getElementById('mapFlowFitBtn')?.addEventListener('click', () => fitFlowchartToViewport(flowModel));
+
+      document.getElementById('mapFlowFullscreenBtn')?.addEventListener('click', () => {
+        state.mapFlowFullscreen = !state.mapFlowFullscreen;
+        state.mapFlowAutoFitKey = '';
+        updateHeaderChrome();
+        renderMapView(container);
+      });
+
+      document.getElementById('mapExportToBoardBtn')?.addEventListener('click', () => {
+        exportFlowchartToBoard(flowModel, chData);
+      });
+
+      const vp = document.getElementById('mapFlowViewport');
+      const tooltip = document.getElementById('mapFlowTooltip');
+      if (vp) {
+        let dragState = null;
+        vp.addEventListener('mousedown', (e) => {
+          if (e.button !== 0) return;
+          dragState = {
+            startX: e.clientX,
+            startY: e.clientY,
+            origPanX: state.mapFlowPanX,
+            origPanY: state.mapFlowPanY,
+            moved: false,
+            targetNode: e.target.closest('[data-flow-doc]'),
+          };
+        });
+        const onMove = (e) => {
+          if (!dragState) return;
+          const dx = e.clientX - dragState.startX;
+          const dy = e.clientY - dragState.startY;
+          if (!dragState.moved && Math.hypot(dx, dy) > 5) {
+            dragState.moved = true;
+            vp.classList.add('is-panning');
+          }
+          if (dragState.moved) {
+            state.mapFlowPanX = dragState.origPanX + dx;
+            state.mapFlowPanY = dragState.origPanY + dy;
+            applyFlowViewportTransform(vp, flowModel);
+          }
+        };
+        const onUp = (e) => {
+          if (!dragState) return;
+          const wasMoved = dragState.moved;
+          const nodeBtn = dragState.targetNode;
+          dragState = null;
+          vp.classList.remove('is-panning');
+          if (!wasMoved && nodeBtn && !(e.ctrlKey || e.metaKey)) {
+            state.mapFlowFullscreen = false;
+            setView('scripts', nodeBtn.dataset.flowDoc);
+          }
+        };
+        vp.addEventListener('mousemove', onMove);
+        if (global._cromMapFlowUp) {
+          global.removeEventListener('mouseup', global._cromMapFlowUp);
+        }
+        global._cromMapFlowUp = onUp;
+        global.addEventListener('mouseup', onUp);
+
+        vp.addEventListener(
+          'wheel',
+          (e) => {
+            e.preventDefault();
+            const rect = vp.getBoundingClientRect();
+            const mx = e.clientX - rect.left;
+            const my = e.clientY - rect.top;
+            const prevZoom = state.mapFlowZoom;
+            const factor = e.deltaY < 0 ? 1.1 : 0.9;
+            const nextZoom = Math.min(2.2, Math.max(0.32, Number((prevZoom * factor).toFixed(2))));
+            const ratio = nextZoom / prevZoom;
+            state.mapFlowPanX = Math.round(mx - (mx - state.mapFlowPanX) * ratio);
+            state.mapFlowPanY = Math.round(my - (my - state.mapFlowPanY) * ratio);
+            state.mapFlowZoom = nextZoom;
+            applyFlowViewportTransform(vp, flowModel);
+          },
+          { passive: false }
+        );
+
+        vp.querySelectorAll('[data-flow-doc]').forEach((nodeEl) => {
+          nodeEl.addEventListener('mouseenter', (e) => {
+            if (!tooltip) return;
+            const doc = filteredDocs.find((d) => d.path === nodeEl.dataset.flowDoc);
+            if (!doc) return;
+            const vis = STATUS_VISUAL[doc.meta.status] || STATUS_VISUAL.ideia;
+            tooltip.innerHTML = `
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:4px;">
+                <span class="status-pill st-${MD.escapeHtml(doc.meta.status)}">${MD.escapeHtml(vis.label)}</span>
+                <span style="font-family:var(--font-mono); font-size:10px; color:var(--text-3);">${MD.escapeHtml(doc.meta.serie || '')}</span>
+              </div>
+              <div style="font-weight:700; color:#fff; margin-bottom:4px;">${MD.escapeHtml(doc.meta.titulo)}</div>
+              <div style="font-family:var(--font-mono); font-size:10px; color:var(--text-3); margin-bottom:5px;">${formatNumber(doc.stats?.words || 0)} pal. • ${MD.escapeHtml(doc.meta.duracao_estimada || '—')}</div>
+              ${doc.meta.resumo ? `<div style="font-size:11px; color:var(--text-2); line-height:1.4;">${MD.escapeHtml(doc.meta.resumo)}</div>` : ''}
+            `;
+            const shellRect = document.getElementById('mapFlowShell')?.getBoundingClientRect();
+            const nRect = nodeEl.getBoundingClientRect();
+            if (shellRect) {
+              const left = Math.min(shellRect.width - 295, Math.max(12, nRect.right - shellRect.left + 10));
+              const top = Math.min(shellRect.height - 150, Math.max(54, nRect.top - shellRect.top));
+              tooltip.style.left = `${Math.round(left)}px`;
+              tooltip.style.top = `${Math.round(top)}px`;
+            }
+            tooltip.classList.remove('hidden');
+          });
+          nodeEl.addEventListener('mouseleave', () => {
+            tooltip?.classList.add('hidden');
+          });
+        });
+      }
+    }
+  }
+
+  /* =========================================================
+     VIEW QUADRO & FLUXOS (EXCALIDRAW + MODO FOCO EM NODES)
+  ========================================================= */
+  let wbAutoSaveTimer = null;
+  let wbSaveInFlight = false;
+  let wbPendingBoardLoad = null;
+  let wbBoardModalMode = 'create'; // 'create' | 'rename'
+  const wbSnapshotWaiters = new Map();
+
+  function updateWhiteboardSaveBadge() {
+    const badge = document.getElementById('wbSaveBadge');
+    if (!badge) return;
+    badge.classList.remove('is-saved', 'is-saving', 'is-unsaved', 'is-error');
+    if (state.boardSaveStatus === 'saving') {
+      badge.classList.add('is-saving');
+      badge.textContent = '● Salvando...';
+    } else if (state.boardSaveStatus === 'unsaved') {
+      badge.classList.add('is-unsaved');
+      badge.textContent = '● Não salvo';
+    } else if (state.boardSaveStatus === 'error') {
+      badge.classList.add('is-error');
+      badge.textContent = '✕ Erro ao salvar';
+    } else {
+      badge.classList.add('is-saved');
+      badge.textContent = '✓ Salvo';
+    }
+  }
+
+  function syncWhiteboardTopbarUI() {
+    const sel = document.getElementById('wbBoardSelect');
+    if (sel) {
+      sel.innerHTML = state.boardsList.length
+        ? state.boardsList
+            .map(
+              (b) =>
+                `<option value="${MD.escapeHtml(b.id)}"${b.id === state.activeBoardId ? ' selected' : ''}>${MD.escapeHtml(b.title)} (${b.elementCount ?? 0})</option>`
+            )
+            .join('')
+        : '<option value="">Sem quadros ainda</option>';
+    }
+
+    const fullBtn = document.getElementById('wbModeFullBtn');
+    const nodesBtn = document.getElementById('wbModeNodesBtn');
+    if (fullBtn) fullBtn.classList.toggle('active', !state.boardNodeFocus);
+    if (nodesBtn) nodesBtn.classList.toggle('active', Boolean(state.boardNodeFocus));
+
+    const fsBtn = document.getElementById('wbFullscreenBtn');
+    if (fsBtn) fsBtn.textContent = state.boardFullscreen ? '✕ Sair Tela Cheia' : '⛶ Tela Cheia';
+
+    const shell = document.getElementById('wbShell');
+    if (shell) shell.classList.toggle('is-wb-fullscreen', Boolean(state.boardFullscreen));
+    document.body.classList.toggle('is-wb-fullscreen', Boolean(state.boardFullscreen && state.view === 'whiteboard'));
+
+    updateWhiteboardSaveBadge();
+  }
+
+  function buildScriptsSummaryList() {
+    const docs = getActiveChannelData().docs || [];
+    return docs.map((d) => ({
+      id: d.meta.id,
+      path: d.path,
+      titulo: d.meta.titulo,
+      status: d.meta.status,
+      serie: d.meta.serie,
+      resumo: d.meta.resumo,
+      words: d.stats?.words || 0,
+      duracao_estimada: d.meta.duracao_estimada || '',
+    }));
+  }
+
+  function postToExcalidrawFrame(payload) {
+    const frame = document.getElementById('excalidrawFrame');
+    if (!frame || !frame.contentWindow) return false;
+    frame.contentWindow.postMessage(payload, global.location.origin);
+    return true;
+  }
+
+  function postLoadSceneToFrame(boardData) {
+    if (!boardData) return;
+    if (!state.boardReady) {
+      wbPendingBoardLoad = boardData;
+      return;
+    }
+    wbPendingBoardLoad = null;
+    postToExcalidrawFrame({
+      type: 'wb:load-scene',
+      boardId: boardData.board?.id || state.activeBoardId,
+      title: boardData.board?.title || 'Quadro',
+      scene: boardData.scene || { elements: [], appState: {}, files: {} },
+      nodeFocus: Boolean(state.boardNodeFocus),
+      scriptsList: buildScriptsSummaryList(),
+    });
+    if (state.pendingInsertDoc) {
+      const docToInsert = state.pendingInsertDoc;
+      state.pendingInsertDoc = null;
+      setTimeout(() => {
+        postToExcalidrawFrame({ type: 'wb:insert-script-node', doc: docToInsert });
+        showToast(`Roteiro "${docToInsert.titulo}" inserido no quadro!`);
+      }, 140);
+    }
+  }
+
+  function requestWhiteboardSnapshot(timeoutMs = 450) {
+    const frame = document.getElementById('excalidrawFrame');
+    if (!frame?.contentWindow || !state.boardReady) {
+      return Promise.resolve(state.boardDirtyScene || state.boardActiveScene || null);
+    }
+    const requestId = `snap-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        wbSnapshotWaiters.delete(requestId);
+        resolve(state.boardDirtyScene || state.boardActiveScene || null);
+      }, timeoutMs);
+      wbSnapshotWaiters.set(requestId, (scene) => {
+        clearTimeout(timer);
+        resolve(scene || state.boardDirtyScene || state.boardActiveScene || null);
+      });
+      postToExcalidrawFrame({ type: 'wb:request-snapshot', requestId });
+    });
+  }
+
+  async function saveActiveBoard({ reason = 'manual', forceSnapshot = false } = {}) {
+    if (!state.serverMode || !state.activeBoardId) return false;
+    if (wbAutoSaveTimer) {
+      clearTimeout(wbAutoSaveTimer);
+      wbAutoSaveTimer = null;
+    }
+    if (wbSaveInFlight) return false;
+    wbSaveInFlight = true;
+
+    const channel = state.activeChannel;
+    const id = state.activeBoardId;
+    state.boardSaveStatus = 'saving';
+    updateWhiteboardSaveBadge();
+
+    try {
+      let scene = state.boardDirtyScene;
+      if (forceSnapshot || !scene) {
+        scene = await requestWhiteboardSnapshot();
+      }
+      if (!scene) scene = state.boardActiveScene || { elements: [], appState: {}, files: {} };
+
+      const res = await fetch('/api/boards', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channel,
+          id,
+          elements: Array.isArray(scene.elements) ? scene.elements : [],
+          appState: scene.appState || {},
+          files: scene.files || {},
+          preferredMode: state.boardNodeFocus ? 'nodes' : 'excalidraw',
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Erro ao salvar quadro');
+
+      state.boardActiveScene = scene;
+      state.boardDirtyScene = null;
+      state.boardSaveStatus = 'saved';
+      state.boardLastSavedAt = json.updatedAt || '';
+      if (Array.isArray(json.boards)) state.boardsList = json.boards;
+      syncWhiteboardTopbarUI();
+      postToExcalidrawFrame({ type: 'wb:saved-ack', updatedAt: json.updatedAt || '' });
+      if (reason === 'manual') showToast('Quadro salvo!');
+      return true;
+    } catch (err) {
+      state.boardSaveStatus = 'error';
+      updateWhiteboardSaveBadge();
+      if (reason === 'manual') showToast(err.message);
+      return false;
+    } finally {
+      wbSaveInFlight = false;
+    }
+  }
+
+  function flushWhiteboardSaveOnLeave() {
+    if (!state.serverMode || !state.activeBoardId || !state.boardDirtyScene) return;
+    if (wbAutoSaveTimer) {
+      clearTimeout(wbAutoSaveTimer);
+      wbAutoSaveTimer = null;
+    }
+    const payload = {
+      channel: state.activeChannel,
+      id: state.activeBoardId,
+      elements: Array.isArray(state.boardDirtyScene.elements) ? state.boardDirtyScene.elements : [],
+      appState: state.boardDirtyScene.appState || {},
+      files: state.boardDirtyScene.files || {},
+      preferredMode: state.boardNodeFocus ? 'nodes' : 'excalidraw',
+    };
+    state.boardDirtyScene = null;
+    try {
+      fetch('/api/boards', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        keepalive: true,
+      }).catch(() => {});
+    } catch {
+      // ignora em unload
+    }
+  }
+
+  async function loadBoardIntoSession(boardId) {
+    if (!state.serverMode || !boardId) return;
+    const ch = state.activeChannel;
+    try {
+      const res = await fetch(
+        `/api/boards/item?channel=${encodeURIComponent(ch)}&id=${encodeURIComponent(boardId)}`,
+        { cache: 'no-store' }
+      );
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Erro ao carregar quadro');
+      if (state.activeChannel !== ch) return;
+
+      state.activeBoardId = json.board.id;
+      state.boardActiveScene = json.scene || { elements: [], appState: {}, files: {} };
+      state.boardDirtyScene = null;
+      state.boardNodeFocus = json.board.preferredMode === 'nodes';
+      state.boardLastSavedAt = json.board.updatedAt || '';
+      state.boardSaveStatus = 'saved';
+
+      syncActiveTabFromState();
+      syncBrowserUrl({ replace: true });
+      syncWhiteboardTopbarUI();
+      const frameEl = document.getElementById('excalidrawFrame');
+      if (frameEl) {
+        frameEl.dataset.loadedBoardId = json.board.id;
+        frameEl.dataset.loadedChannel = ch;
+      }
+      postLoadSceneToFrame(json);
+    } catch (err) {
+      showToast(err.message);
+    }
+  }
+
+  async function initWhiteboardSession() {
+    if (!state.serverMode) {
+      syncWhiteboardTopbarUI();
+      return;
+    }
+    const ch = state.activeChannel;
+    try {
+      const res = await fetch(`/api/boards?channel=${encodeURIComponent(ch)}`, { cache: 'no-store' });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Erro ao listar quadros');
+      if (state.activeChannel !== ch) return;
+
+      let boards = Array.isArray(json.boards) ? json.boards : [];
+      if (boards.length === 0) {
+        const createRes = await fetch('/api/boards', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            channel: ch,
+            id: 'quadro-principal',
+            title: 'Quadro Principal',
+            preferredMode: 'excalidraw',
+            elements: [],
+            appState: { viewBackgroundColor: '#ffffff', theme: 'dark', gridSize: 20 },
+            files: {},
+          }),
+        });
+        const created = await createRes.json();
+        if (createRes.ok) {
+          boards = created.boards || [created.board];
+        }
+      }
+
+      state.boardsList = boards;
+      const targetId =
+        state.activeBoardId && boards.some((b) => b.id === state.activeBoardId)
+          ? state.activeBoardId
+          : boards[0]?.id || null;
+
+      if (targetId) {
+        await loadBoardIntoSession(targetId);
+      } else {
+        syncWhiteboardTopbarUI();
+      }
+    } catch (err) {
+      showToast(err.message);
+    }
+  }
+
+  function toggleWhiteboardFullscreen(forceVal) {
+    const next = typeof forceVal === 'boolean' ? forceVal : !state.boardFullscreen;
+    state.boardFullscreen = next;
+    const shell = document.getElementById('wbShell');
+    if (shell) {
+      shell.classList.toggle('is-wb-fullscreen', next);
+      if (next && !document.fullscreenElement && shell.requestFullscreen) {
+        shell.requestFullscreen().catch(() => {});
+      } else if (!next && document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+    }
+    document.body.classList.toggle('is-wb-fullscreen', Boolean(next && state.view === 'whiteboard'));
+    syncWhiteboardTopbarUI();
+    renderTabstrip();
+  }
+
+  function openWbBoardModal(mode = 'create') {
+    if (!state.serverMode) {
+      showToast('Gerenciar quadros requer o servidor local rodando.');
+      return;
+    }
+    wbBoardModalMode = mode;
+    const modal = document.getElementById('wbBoardModal');
+    const titleEl = document.getElementById('wbBoardModalTitle');
+    const nameInp = document.getElementById('wbBoardTitleInput');
+    const slugField = document.getElementById('wbBoardSlugField');
+    const slugInp = document.getElementById('wbBoardSlugInput');
+    const modeField = document.getElementById('wbBoardModeField');
+    const modeSel = document.getElementById('wbBoardModeSelect');
+    const submitBtn = document.getElementById('wbBoardSubmitBtn');
+
+    if (mode === 'rename') {
+      const cur = state.boardsList.find((b) => b.id === state.activeBoardId);
+      if (!cur) return;
+      titleEl.textContent = 'Renomear Quadro';
+      nameInp.value = cur.title || cur.id;
+      slugInp.value = cur.id;
+      slugInp.dataset.touched = '1';
+      slugField.classList.remove('hidden');
+      modeField.classList.add('hidden');
+      submitBtn.textContent = 'Salvar Nome';
+    } else {
+      titleEl.textContent = 'Novo Quadro (Excalidraw)';
+      nameInp.value = '';
+      slugInp.value = '';
+      delete slugInp.dataset.touched;
+      slugField.classList.remove('hidden');
+      modeField.classList.remove('hidden');
+      modeSel.value = state.boardNodeFocus ? 'nodes' : 'excalidraw';
+      submitBtn.textContent = 'Criar Quadro';
+    }
+    modal?.classList.remove('hidden');
+    setTimeout(() => nameInp?.focus(), 30);
+  }
+
+  function openWbDeleteConfirmModal() {
+    if (!state.serverMode || !state.activeBoardId) return;
+    const cur = state.boardsList.find((b) => b.id === state.activeBoardId);
+    const nameSpan = document.getElementById('wbDeleteConfirmName');
+    if (nameSpan) nameSpan.textContent = cur ? `${cur.title} (${cur.id})` : state.activeBoardId;
+    document.getElementById('wbDeleteConfirmModal')?.classList.remove('hidden');
+  }
+
+  function openWbScriptPickerModal() {
+    const modal = document.getElementById('wbScriptPickerModal');
+    const searchInp = document.getElementById('wbScriptSearchInput');
+    if (!modal) return;
+    if (searchInp) searchInp.value = '';
+    renderWbScriptPickerList('');
+    modal.classList.remove('hidden');
+    setTimeout(() => searchInp?.focus(), 30);
+  }
+
+  function renderWbScriptPickerList(query = '') {
+    const listEl = document.getElementById('wbScriptPickerList');
+    if (!listEl) return;
+    const docs = getActiveChannelData().docs || [];
+    const q = query.trim().toLowerCase();
+    const filtered = docs.filter(
+      (d) => !q || `${d.meta.titulo} ${d.meta.serie} ${d.path} ${d.meta.resumo}`.toLowerCase().includes(q)
+    );
+    listEl.innerHTML = filtered.length
+      ? filtered
+          .map(
+            (d) => `
+              <button type="button" class="wb-script-picker-item" data-pick-script="${MD.escapeHtml(d.path)}">
+                <div style="min-width:0; flex:1;">
+                  <div style="font-size:13px; font-weight:600; color:var(--text-1); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${MD.escapeHtml(d.meta.titulo)}</div>
+                  <div style="font-family:var(--font-mono); font-size:10.5px; color:var(--text-3); margin-top:2px;">${MD.escapeHtml(d.meta.serie || 'Geral')} • ${MD.escapeHtml(d.path)}</div>
+                </div>
+                <span class="status-pill st-${MD.escapeHtml(d.meta.status)}">${MD.escapeHtml(d.meta.status)}</span>
+              </button>
+            `
+          )
+          .join('')
+      : '<p style="padding:18px; text-align:center; color:var(--text-3); margin:0;">Nenhum roteiro encontrado.</p>';
+
+    listEl.querySelectorAll('[data-pick-script]').forEach((btn) => {
+      btn.onclick = () => {
+        const doc = docs.find((d) => d.path === btn.dataset.pickScript);
+        document.getElementById('wbScriptPickerModal')?.classList.add('hidden');
+        if (!doc) return;
+        const payloadDoc = {
+          id: doc.meta.id,
+          path: doc.path,
+          titulo: doc.meta.titulo,
+          status: doc.meta.status,
+          serie: doc.meta.serie,
+          resumo: doc.meta.resumo,
+          words: doc.stats?.words || 0,
+          duracao_estimada: doc.meta.duracao_estimada || '',
+        };
+        postToExcalidrawFrame({ type: 'wb:insert-script-node', doc: payloadDoc });
+        showToast(`Roteiro "${doc.meta.titulo}" inserido no quadro!`);
+      };
+    });
+  }
+
+  function sendDocToWhiteboard(doc) {
+    if (!doc) return;
+    const payloadDoc = {
+      id: doc.meta.id,
+      path: doc.path,
+      titulo: doc.meta.titulo,
+      status: doc.meta.status,
+      serie: doc.meta.serie,
+      resumo: doc.meta.resumo,
+      words: doc.stats?.words || 0,
+      duracao_estimada: doc.meta.duracao_estimada || '',
+    };
+    if (state.view === 'whiteboard' && state.boardReady) {
+      postToExcalidrawFrame({ type: 'wb:insert-script-node', doc: payloadDoc });
+      showToast(`Roteiro "${doc.meta.titulo}" inserido no quadro!`);
+      return;
+    }
+    state.pendingInsertDoc = payloadDoc;
+    setView('whiteboard');
+  }
+
+  async function importExcalidrawFile(file) {
+    if (!file || !state.serverMode) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const baseTitle = (parsed?.cromMeta?.title || file.name.replace(/\.excalidraw(\.json)?$/i, '') || 'Quadro Importado').trim();
+      const res = await fetch('/api/boards', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channel: state.activeChannel,
+          title: baseTitle,
+          elements: Array.isArray(parsed.elements) ? parsed.elements : [],
+          appState: parsed.appState || { viewBackgroundColor: '#0e0f17', theme: 'dark', gridSize: 20 },
+          files: parsed.files || {},
+          preferredMode: parsed?.cromMeta?.preferredMode === 'nodes' ? 'nodes' : 'excalidraw',
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Erro ao importar arquivo .excalidraw');
+      state.boardsList = json.boards || [];
+      if (json.state) state.data = normalizePayload(json.state);
+      await loadBoardIntoSession(json.board.id);
+      showToast(`Quadro "${json.board.title}" importado!`);
+    } catch (err) {
+      showToast(`Falha na importação: ${err.message}`);
+    }
+  }
+
+  function handleWhiteboardMessage(e) {
+    if (e.origin !== global.location.origin) return;
+    const msg = e.data;
+    if (!msg || typeof msg.type !== 'string' || !msg.type.startsWith('wb:')) return;
+
+    switch (msg.type) {
+      case 'wb:ready':
+        state.boardReady = true;
+        if (wbPendingBoardLoad) {
+          postLoadSceneToFrame(wbPendingBoardLoad);
+        } else if (state.activeBoardId && state.boardActiveScene) {
+          postLoadSceneToFrame({
+            board: { id: state.activeBoardId, title: state.boardsList.find((b) => b.id === state.activeBoardId)?.title || 'Quadro' },
+            scene: state.boardActiveScene,
+          });
+        }
+        break;
+      case 'wb:dirty':
+        if (state.view !== 'whiteboard' || !state.activeBoardId) return;
+        state.boardDirtyScene = msg.scene || null;
+        state.boardSaveStatus = 'unsaved';
+        updateWhiteboardSaveBadge();
+        if (wbAutoSaveTimer) clearTimeout(wbAutoSaveTimer);
+        wbAutoSaveTimer = setTimeout(() => {
+          wbAutoSaveTimer = null;
+          saveActiveBoard({ reason: 'auto' });
+        }, 900);
+        break;
+      case 'wb:save-request':
+        if (msg.scene) state.boardDirtyScene = msg.scene;
+        saveActiveBoard({ reason: 'manual', forceSnapshot: !msg.scene });
+        break;
+      case 'wb:mode-changed':
+        state.boardNodeFocus = Boolean(msg.nodeFocus);
+        syncWhiteboardTopbarUI();
+        saveActiveBoard({ reason: 'mode', forceSnapshot: true });
+        break;
+      case 'wb:request-script-picker':
+        openWbScriptPickerModal();
+        break;
+      case 'wb:toggle-fullscreen':
+        toggleWhiteboardFullscreen();
+        break;
+      case 'wb:snapshot': {
+        const waiter = msg.requestId ? wbSnapshotWaiters.get(msg.requestId) : null;
+        if (waiter) {
+          wbSnapshotWaiters.delete(msg.requestId);
+          waiter(msg.scene || null);
+        }
+        break;
+      }
+    }
+  }
+
+  function renderWhiteboardView(container) {
+    if (!state.serverMode) {
+      container.innerHTML = `
+        <div class="wb-shell" id="wbShell" style="align-items:center; justify-content:center; padding:32px; text-align:center;">
+          <div class="glass-card" style="max-width:520px;">
+            <h2 style="margin:0;">Quadro & Fluxos (Excalidraw Local)</h2>
+            <p style="margin:8px 0 14px; color:var(--text-2);">
+              O editor Excalidraw completo e o salvamento em <code>quadros/*.excalidraw</code> funcionam no servidor local do Studio (<code>./bin/crom-studio --tray</code> ou <code>npm start</code>).
+            </p>
+            <button type="button" class="btn-sm btn-accent" id="wbStandaloneBackBtn">Voltar ao Mapa de Roteiros</button>
+          </div>
+        </div>
+      `;
+      document.getElementById('wbStandaloneBackBtn')?.addEventListener('click', () => setView('map'));
+      return;
+    }
+
+    const existingFrame = document.getElementById('excalidrawFrame');
+    if (existingFrame && container.contains(existingFrame)) {
+      syncWhiteboardTopbarUI();
+      if (
+        state.activeBoardId &&
+        (existingFrame.dataset.loadedBoardId !== state.activeBoardId ||
+          existingFrame.dataset.loadedChannel !== state.activeChannel)
+      ) {
+        loadBoardIntoSession(state.activeBoardId);
+      } else if (!state.activeBoardId || existingFrame.dataset.loadedChannel !== state.activeChannel) {
+        initWhiteboardSession();
+      }
+      return;
+    }
+
+    state.boardReady = false;
+    wbPendingBoardLoad = null;
+
+    container.innerHTML = `
+      <div class="wb-shell${state.boardFullscreen ? ' is-wb-fullscreen' : ''}" id="wbShell">
+        <div class="wb-topbar">
+          <div class="wb-group">
+            <select class="select-dark wb-select" id="wbBoardSelect" title="Selecionar quadro"></select>
+            <button type="button" class="btn-sm" id="wbNewBtn">+ Novo</button>
+            <button type="button" class="btn-sm" id="wbRenameBtn">Renomear</button>
+            <button type="button" class="btn-sm btn-danger" id="wbDeleteBtn">Excluir</button>
+            <button type="button" class="btn-sm" id="wbImportBtn">Importar .excalidraw</button>
+            <input type="file" id="wbImportInput" accept=".excalidraw,.json" class="hidden">
+          </div>
+
+          <div class="wb-group">
+            <div class="mode-switch" id="wbModeSwitch">
+              <button type="button" id="wbModeFullBtn" class="${!state.boardNodeFocus ? 'active' : ''}">✎ Excalidraw Completo</button>
+              <button type="button" id="wbModeNodesBtn" class="${state.boardNodeFocus ? 'active' : ''}">◈ Foco em Nodes</button>
+            </div>
+            <button type="button" class="btn-sm" id="wbInsertScriptBtn">📄 + Roteiro</button>
+          </div>
+
+          <div class="wb-group">
+            <span class="wb-save-badge" id="wbSaveBadge">✓ Salvo</span>
+            <button type="button" class="btn-sm btn-accent" id="wbSaveBtn">Salvar (Ctrl+S)</button>
+            <button type="button" class="btn-sm" id="wbFullscreenBtn">⛶ Tela Cheia</button>
+          </div>
+        </div>
+
+        <iframe id="excalidrawFrame" class="wb-iframe" src="/excalidraw-frame.html" title="Quadro Excalidraw"></iframe>
+      </div>
+    `;
+
+    const sel = document.getElementById('wbBoardSelect');
+    if (sel) {
+      sel.onchange = async () => {
+        const nextId = sel.value;
+        if (!nextId || nextId === state.activeBoardId) return;
+        if (state.boardDirtyScene) {
+          await saveActiveBoard({ reason: 'switch-board' });
+        }
+        await loadBoardIntoSession(nextId);
+      };
+    }
+
+    document.getElementById('wbNewBtn')?.addEventListener('click', () => openWbBoardModal('create'));
+    document.getElementById('wbRenameBtn')?.addEventListener('click', () => openWbBoardModal('rename'));
+    document.getElementById('wbDeleteBtn')?.addEventListener('click', () => openWbDeleteConfirmModal());
+
+    const importBtn = document.getElementById('wbImportBtn');
+    const importInput = document.getElementById('wbImportInput');
+    if (importBtn && importInput) {
+      importBtn.onclick = () => importInput.click();
+      importInput.onchange = () => {
+        const file = importInput.files?.[0];
+        if (file) importExcalidrawFile(file);
+        importInput.value = '';
+      };
+    }
+
+    document.getElementById('wbModeFullBtn')?.addEventListener('click', () => {
+      if (!state.boardNodeFocus) return;
+      state.boardNodeFocus = false;
+      syncWhiteboardTopbarUI();
+      postToExcalidrawFrame({ type: 'wb:set-node-focus', nodeFocus: false });
+      saveActiveBoard({ reason: 'mode', forceSnapshot: true });
+    });
+
+    document.getElementById('wbModeNodesBtn')?.addEventListener('click', () => {
+      if (state.boardNodeFocus) return;
+      state.boardNodeFocus = true;
+      syncWhiteboardTopbarUI();
+      postToExcalidrawFrame({ type: 'wb:set-node-focus', nodeFocus: true });
+      saveActiveBoard({ reason: 'mode', forceSnapshot: true });
+    });
+
+    document.getElementById('wbInsertScriptBtn')?.addEventListener('click', () => openWbScriptPickerModal());
+    document.getElementById('wbSaveBtn')?.addEventListener('click', () => saveActiveBoard({ reason: 'manual', forceSnapshot: true }));
+    document.getElementById('wbFullscreenBtn')?.addEventListener('click', () => toggleWhiteboardFullscreen());
+
+    syncWhiteboardTopbarUI();
+    initWhiteboardSession();
   }
 
   /* =========================================================
@@ -2907,6 +5587,7 @@
         state.dirtyMeta = null;
         state.hasUnsavedEdits = false;
         state.commitMessageDraft = '';
+        syncActiveTabFromState();
         syncBrowserUrl({ replace: false });
         updateHeaderChrome();
         renderScriptsView(container);
@@ -3049,6 +5730,7 @@
             state.dirtyMeta = null;
             state.hasUnsavedEdits = false;
             state.commitMessageDraft = '';
+            syncActiveTabFromState();
             syncBrowserUrl({ replace: false });
             updateHeaderChrome();
             renderScriptsView(container);
@@ -3476,7 +6158,7 @@
               ${items
                 .map(
                   (d) => `
-                    <div class="kanban-card" draggable="true" data-drag-path="${MD.escapeHtml(d.path)}">
+                    <div class="kanban-card" draggable="true" data-drag-path="${MD.escapeHtml(d.path)}" data-doc-path="${MD.escapeHtml(d.path)}">
                       <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
                         <span class="status-pill st-${MD.escapeHtml(d.meta.status)}" style="font-size:9.5px;">${MD.escapeHtml(d.meta.formato === 'short' ? 'Short' : 'Longo')}</span>
                         <span style="font-family:var(--font-mono); font-size:10px; color:var(--text-3);">${d.stats.words} pal.</span>
@@ -3762,7 +6444,7 @@
         ${videos
           .map(
             (v) => `
-              <article class="glass-card">
+              <article class="glass-card" data-ext-url="${MD.escapeHtml(v.url)}" data-ext-title="${MD.escapeHtml(v.title)}">
                 <div class="yt-thumb-wrap">
                   <img src="${MD.escapeHtml(v.thumbnail)}" alt="${MD.escapeHtml(v.title)}" loading="lazy" onerror="this.style.opacity='0.15'">
                   <span class="yt-type-chip">${v.type === 'short' ? 'SHORT' : 'LONGO'}</span>
@@ -5209,6 +7891,31 @@ ${summary || ''}
 
       updateHeaderChrome();
 
+      if (state.view === 'whiteboard') {
+        if (source === 'fs') {
+          try {
+            const bRes = await fetch(`/api/boards?channel=${encodeURIComponent(state.activeChannel)}`, { cache: 'no-store' });
+            if (bRes.ok) {
+              const bJson = await bRes.json();
+              if (Array.isArray(bJson.boards)) state.boardsList = bJson.boards;
+            }
+          } catch {
+            // mantém lista atual
+          }
+          updateHeaderChrome();
+          syncWhiteboardTopbarUI();
+          if (state.boardDirtyScene) {
+            showToast('Alteração externa no quadro detectada (edição atual preservada)');
+          } else if (state.activeBoardId) {
+            await loadBoardIntoSession(state.activeBoardId);
+            showToast('Quadro atualizado automaticamente do disco');
+          }
+        } else {
+          syncWhiteboardTopbarUI();
+        }
+        return;
+      }
+
       if (state.view === 'settings') {
         await loadSettingsConfig({ force: true });
       } else {
@@ -5323,7 +8030,82 @@ ${summary || ''}
       fabNewBtn?.classList.remove('is-open');
       fabNewBtn?.setAttribute('aria-expanded', 'false');
       colorMenu?.classList.add('hidden');
+      closeContextMenu();
     };
+
+    const newTabBtn = document.getElementById('newTabBtn');
+    if (newTabBtn) {
+      newTabBtn.onclick = () => {
+        closeAllMenus();
+        openNewTab({ kind: 'studio', channel: state.activeChannel, view: 'dashboard' }, { activate: true });
+      };
+    }
+
+    const collapseTabBtn = document.getElementById('collapseTabstripBtn');
+    if (collapseTabBtn) {
+      collapseTabBtn.onclick = () => {
+        state.tabBarPinned = false;
+        renderTabstrip();
+      };
+    }
+
+    const pullHandleBtn = document.getElementById('tabstripPullHandle');
+    if (pullHandleBtn) {
+      pullHandleBtn.onclick = () => {
+        state.tabBarPinned = !isTabstripOpen();
+        renderTabstrip();
+      };
+    }
+
+    document.addEventListener('contextmenu', handleStudioContextMenu);
+    document.addEventListener('scroll', () => closeContextMenu(), { capture: true, passive: true });
+    global.addEventListener('blur', () => closeContextMenu());
+
+    const handleOpenInNewTabGesture = (e) => {
+      const resolved = resolveContextTarget(e.target);
+      if (!resolved || resolved.kind === 'tab') return;
+      e.preventDefault();
+      e.stopPropagation();
+      closeAllMenus();
+      if (resolved.kind === 'nav') {
+        openNewTab({ kind: 'studio', channel: state.activeChannel, view: resolved.view }, { activate: true });
+      } else if (resolved.kind === 'doc') {
+        document.querySelectorAll('.modal-backdrop, .drawer-backdrop').forEach((m) => m.classList.add('hidden'));
+        openNewTab({ kind: 'studio', channel: state.activeChannel, view: 'scripts', docPath: resolved.docPath }, { activate: true });
+      } else if (resolved.kind === 'external') {
+        const cleanTitle = resolved.title.replace(/\s*↗\s*$/, '').trim() || getHostnameLabel(resolved.url);
+        openNewTab(
+          { kind: 'link', channel: state.activeChannel, view: 'link', externalUrl: resolved.url, title: cleanTitle },
+          { activate: true }
+        );
+      }
+    };
+
+    document.addEventListener(
+      'click',
+      (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.button === 0) {
+          handleOpenInNewTabGesture(e);
+        }
+      },
+      true
+    );
+
+    document.addEventListener(
+      'auxclick',
+      (e) => {
+        if (e.button !== 1) return;
+        const tabEl = e.target instanceof Element ? e.target.closest('.studio-tab[data-tab-id]') : null;
+        if (tabEl) {
+          e.preventDefault();
+          e.stopPropagation();
+          closeTab(tabEl.dataset.tabId);
+          return;
+        }
+        handleOpenInNewTabGesture(e);
+      },
+      true
+    );
 
     document.querySelectorAll('#sideNav .nav-item').forEach((btn) => {
       btn.onclick = () => {
@@ -5408,6 +8190,16 @@ ${summary || ''}
               break;
             case 'ideia':
               openNewDocModal({ type: 'ideia', folder: '01-ideias' });
+              break;
+            case 'whiteboard':
+              if (state.view === 'whiteboard') {
+                openWbBoardModal('create');
+              } else {
+                setView('whiteboard');
+                setTimeout(() => {
+                  if (state.serverMode) openWbBoardModal('create');
+                }, 120);
+              }
               break;
             case 'version': {
               const doc = getActiveDoc();
@@ -5720,9 +8512,135 @@ ${summary || ''}
 
     document.getElementById('cmdInput').oninput = (e) => renderCmdResults(e.target.value);
 
+    const wbTitleInp = document.getElementById('wbBoardTitleInput');
+    const wbSlugInp = document.getElementById('wbBoardSlugInput');
+    if (wbSlugInp) {
+      wbSlugInp.oninput = () => {
+        wbSlugInp.dataset.touched = '1';
+      };
+    }
+    if (wbTitleInp) {
+      wbTitleInp.oninput = () => {
+        if (wbSlugInp && !wbSlugInp.dataset.touched) {
+          const s = MD.slugify(wbTitleInp.value);
+          wbSlugInp.value = s === 'secao' && !wbTitleInp.value.trim() ? '' : s;
+        }
+      };
+    }
+
+    const wbBoardForm = document.getElementById('wbBoardForm');
+    if (wbBoardForm) {
+      wbBoardForm.onsubmit = async (e) => {
+        e.preventDefault();
+        if (!state.serverMode) return;
+        const title = (document.getElementById('wbBoardTitleInput')?.value || '').trim();
+        const slugRaw = (document.getElementById('wbBoardSlugInput')?.value || '').trim().toLowerCase();
+        const mode = document.getElementById('wbBoardModeSelect')?.value || 'excalidraw';
+        if (!title) return;
+
+        try {
+          if (wbBoardModalMode === 'rename') {
+            const curId = state.activeBoardId;
+            if (!curId) return;
+            const res = await fetch('/api/boards', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                channel: state.activeChannel,
+                id: curId,
+                title,
+                renameTo: slugRaw && slugRaw !== curId ? slugRaw : undefined,
+              }),
+            });
+            const json = await res.json();
+            if (!res.ok) throw new Error(json.error || 'Erro ao renomear quadro');
+            state.boardsList = json.boards || state.boardsList;
+            state.activeBoardId = json.board.id;
+            document.getElementById('wbBoardModal')?.classList.add('hidden');
+            syncActiveTabFromState();
+            syncBrowserUrl({ replace: true });
+            syncWhiteboardTopbarUI();
+            showToast(`Quadro renomeado para "${json.board.title}"!`);
+          } else {
+            if (state.boardDirtyScene) {
+              await saveActiveBoard({ reason: 'switch-board' });
+            }
+            const res = await fetch('/api/boards', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                channel: state.activeChannel,
+                title,
+                id: slugRaw || undefined,
+                preferredMode: mode === 'nodes' ? 'nodes' : 'excalidraw',
+                elements: [],
+                appState: { viewBackgroundColor: '#ffffff', theme: 'dark', gridSize: 20 },
+                files: {},
+              }),
+            });
+            const json = await res.json();
+            if (!res.ok) throw new Error(json.error || 'Erro ao criar quadro');
+            state.boardsList = json.boards || [];
+            if (json.state) state.data = normalizePayload(json.state);
+            document.getElementById('wbBoardModal')?.classList.add('hidden');
+            await loadBoardIntoSession(json.board.id);
+            showToast(`Quadro "${json.board.title}" criado!`);
+          }
+        } catch (err) {
+          showToast(err.message);
+        }
+      };
+    }
+
+    const wbDeleteConfirmBtn = document.getElementById('wbDeleteConfirmBtn');
+    if (wbDeleteConfirmBtn) {
+      wbDeleteConfirmBtn.onclick = async () => {
+        if (!state.serverMode || !state.activeBoardId) return;
+        const targetId = state.activeBoardId;
+        try {
+          const res = await fetch(
+            `/api/boards?channel=${encodeURIComponent(state.activeChannel)}&id=${encodeURIComponent(targetId)}`,
+            { method: 'DELETE' }
+          );
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || 'Erro ao excluir quadro');
+          document.getElementById('wbDeleteConfirmModal')?.classList.add('hidden');
+          state.boardDirtyScene = null;
+          state.boardActiveScene = null;
+          state.activeBoardId = null;
+          state.boardsList = json.boards || [];
+          if (json.state) state.data = normalizePayload(json.state);
+          showToast(`Quadro "${targetId}" excluído!`);
+          await initWhiteboardSession();
+        } catch (err) {
+          showToast(err.message);
+        }
+      };
+    }
+
+    const wbScriptSearchInp = document.getElementById('wbScriptSearchInput');
+    if (wbScriptSearchInp) {
+      wbScriptSearchInp.oninput = () => renderWbScriptPickerList(wbScriptSearchInp.value);
+    }
+
+    global.addEventListener('message', handleWhiteboardMessage);
+
+    document.addEventListener('fullscreenchange', () => {
+      const isWbFs = Boolean(document.fullscreenElement && document.fullscreenElement.id === 'wbShell');
+      if (state.boardFullscreen !== isWbFs && !document.fullscreenElement) {
+        state.boardFullscreen = false;
+        syncWhiteboardTopbarUI();
+        renderTabstrip();
+      }
+    });
+
+    global.addEventListener('pagehide', flushWhiteboardSaveOnLeave);
+    global.addEventListener('beforeunload', flushWhiteboardSaveOnLeave);
+
     global.addEventListener('popstate', () => {
       if (!state.data) return;
       applyRouteSnapshot(parseRouteFromLocation(state.data));
+      syncActiveTabFromState();
       updateHeaderChrome();
       renderCurrentView();
       if (state.view === 'scripts' && state.activeVersion !== 'principal' && state.selectedDocPath) {
@@ -5737,15 +8655,24 @@ ${summary || ''}
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && state.view === 'scripts') {
         e.preventDefault();
         saveCurrentDoc();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && state.view === 'whiteboard') {
+        e.preventDefault();
+        saveActiveBoard({ reason: 'manual', forceSnapshot: true });
       } else if (e.key === 'Escape') {
         const openOverlays = Array.from(
-          document.querySelectorAll('.modal-backdrop, .drawer-backdrop, #colorMenu, #workspaceMenu, #fabMenu')
+          document.querySelectorAll('.modal-backdrop, .drawer-backdrop, #colorMenu, #workspaceMenu, #fabMenu, #studioContextMenu')
         ).filter((el) => !el.classList.contains('hidden'));
         if (openOverlays.length) {
           openOverlays.forEach((el) => el.classList.add('hidden'));
           fabNewBtn?.classList.remove('is-open');
           fabNewBtn?.setAttribute('aria-expanded', 'false');
           avatarBtn?.setAttribute('aria-expanded', 'false');
+        } else if (state.boardFullscreen) {
+          toggleWhiteboardFullscreen(false);
+        } else if (state.mapFlowFullscreen) {
+          state.mapFlowFullscreen = false;
+          updateHeaderChrome();
+          renderMapView(document.getElementById('viewContainer'));
         } else if (state.focusMode) {
           state.focusMode = false;
           syncBrowserUrl({ replace: true });

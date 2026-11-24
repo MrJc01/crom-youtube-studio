@@ -1,17 +1,22 @@
 # Crom YouTube Studio
 
-Painel web editorial **multi-canal** para YouTube com leitor/editor de roteiros Markdown, **Git de Roteiros + Versões Alternativas**, teleprompter em tempo real, Mapa de Roteiros colorido por status, pipeline Kanban, configurações de workspace pela UI, sincronização automática em tempo real (`fs.watch` + SSE), feed RSS do YouTube, ponte com **Kdenlive / MCP (`kdenlive-mcp-plus`)** e ícone persistente na bandeja do sistema (system tray).
+Painel web editorial **multi-canal** para YouTube com interface **borderless ponta a ponta**, barra de abas superior retrátil, menu de contexto personalizado no botão direito, leitor/editor de roteiros Markdown, **Git de Roteiros + Versões Alternativas**, teleprompter em tempo real, **Mapa de Roteiros** em cartões e **Fluxograma interativo**, página **Quadro & Fluxos** com **Excalidraw completo (`pt-BR`) + Modo Foco em Nodes**, pipeline Kanban, configurações de workspace pela UI, sincronização automática em tempo real (`fs.watch` + SSE), feed RSS do YouTube, ponte com **Kdenlive / MCP (`kdenlive-mcp-plus`)** e ícone persistente na bandeja do sistema (system tray).
 
-Construído em **Node.js nativo (zero dependências externas)** no backend, **HTML/CSS/JS clássico** no frontend (compatível inclusive via `file://` sem CORS) e **Python 3 + GTK 3 / AyatanaAppIndicator3** para o aplicativo de bandeja no Linux.
+Construído em **Node.js nativo** no backend, **HTML/CSS/JS clássico** no frontend, bundle local oficial de **`@excalidraw/excalidraw`** (zero dependência de CDN em runtime) e **Python 3 + GTK 3 / AyatanaAppIndicator3** para o aplicativo de bandeja no Linux.
 
 ---
 
 ## Principais Recursos
 
+- **Interface Borderless, Barra de Abas Retrátil & Menu de Contexto Personalizado:**
+  - Shell sem bordas externas (`.viewport-frame` e `.studio-shell` edge-to-edge) com scroll limpo em todas as telas.
+  - **Barra de abas superior retrátil (estilo OpenCode / navegador):** fica aberta automaticamente na **Visão Geral** e recolhe para uma seta puxadora discreta (`▾`) no topo nas páginas internas; suporta `+` nova aba, `Ctrl+Click` / clique do meio, persistência local e abas dedicadas de **links externos** (com player embutido para YouTube).
+  - **Menu de contexto no botão direito (`#studioContextMenu`):** em roteiros, cards, barra lateral, abas e links externos, oferece **Abrir em nova aba**, **Abrir em aba (segundo plano)**, **Abrir na barra de abas (topo)**, **Copiar como contexto** (Markdown estruturado), **Copiar link / URL / caminho** e **Enviar para o Quadro (Excalidraw)**.
 - **URLs amigáveis com SPA fallback (`src/server.mjs`):**
   - `/<canal>` — Visão Geral (única tela com KPIs no cabeçalho e switcher grande de canais)
   - `/<canal>/roteiros` e `/<canal>/roteiros/<caminho.md>` — Roteiros & Leitor (suporta `?modo=ler|editar|teleprompter|historico&versao=<slug>&foco=1`)
-  - `/<canal>/mapa` — Mapa de Roteiros colorido por status
+  - `/<canal>/mapa` — Mapa de Roteiros (Cartões coloridos por status + **Estilo Fluxograma interativo**)
+  - `/<canal>/quadro` e `/<canal>/quadro/<slug>` — **Quadro & Fluxos** (Excalidraw completo + Foco em Nodes, salvos em `<workspace>/quadros/*.excalidraw`)
   - `/<canal>/pipeline` — Pipeline Kanban interativo
   - `/<canal>/ideias` — Ideias, Séries & GitHub
   - `/<canal>/catalogo` — Catálogo YouTube (via RSS)
@@ -26,7 +31,12 @@ Construído em **Node.js nativo (zero dependências externas)** no backend, **HT
 - **Git de Roteiros + Versões Alternativas (2 Dinâmicas Distintas):**
   - **Dinâmica 1 — Git de Roteiros:** histórico imutável de snapshots (`r001`, `r002`, ...) em `<workspace>/.roteiro-git/<docKey>/revisoes/`, diff linha a linha, snapshot de resgate automático para edições externas e restauração append-only.
   - **Dinâmica 2 — Versões Alternativas:** variantes nomeadas (`v2-enxuta`, `gancho-direto`, ...) em `<workspace>/.roteiro-git/<docKey>/versoes/<slug>.md` sem alterar o `.md` principal, com commits independentes, diff contra `principal` e promoção controlada para o arquivo principal.
-- **Mapa de Roteiros Colorido por Status (`/<canal>/mapa`):** barra de distribuição e cartões agrupados com cores por estado (`publicado`, `gravando`, `edicao`, `roteiro`, `pesquisa`, `ideia`, `referencia`, `template`, `arquivado`).
+- **Mapa de Roteiros & Modo Fluxograma (`/<canal>/mapa`):**
+  - Alterna entre **Cartões** coloridos por status (`publicado`, `gravando`, `edicao`, `roteiro`, `pesquisa`, `ideia`, `referencia`, `template`, `arquivado`) e **Fluxograma interativo** com 3 layouts (**Constelação (Clusters)**, **User Flow (Blocos)** e **Pipeline (Etapas)**), drag-to-pan, zoom, **Tela Cheia (`⛶`)** e exportação direta via **`✎ Abrir no Quadro (Excalidraw)`**.
+- **Quadro & Fluxos — Excalidraw Local + Foco em Nodes (`/<canal>/quadro`):**
+  - Bundle offline de **`@excalidraw/excalidraw`** em `pt-BR` servido localmente em `/excalidraw-frame.html` (sem fontes ou scripts externos).
+  - Dois modos integrados e persistidos por quadro: **✎ Excalidraw Completo** (todas as ferramentas nativas de desenho, formas, imagem, biblioteca, exportação PNG/SVG/JSON) e **◈ Foco em Nodes** (barra rápida para criar cards numerados, `+ Próximo` com `Tab`, `+ Ramo`, `+ Grupo`, `+ Decisão`, `+ Destino`, alinhamento e setas tracejadas/sólidas conectadas).
+  - Botão **`📄 + Roteiro`** para inserir qualquer `.md` do workspace como card no canvas, importação de `.excalidraw`, **Tela Cheia (`⛶`)**, auto-save com debounce (`900ms`) + `Ctrl+S` e atualização em tempo real via SSE.
 - **Configurações do Workspace & Dropdown Multi-Canal:**
   - Dropdown de workspaces no canto inferior esquerdo (avatar do canal) com troca rápida e opção **`+ Criar Novo Workspace`** (com criação automática opcional de pastas e `README.md`).
   - Página `/<canal>/configuracoes` para editar `port`, `host`, `kdenliveRoot`, status configurável (`ativo`, `pausado` ou `oculto`), banner opcional, handle, `channelId`, `seriesList`, links e caminhos, persistindo direto em `config.local.json`.
@@ -43,19 +53,25 @@ Construído em **Node.js nativo (zero dependências externas)** no backend, **HT
 crom-youtube-studio/
 ├── config.example.json       # Modelo genérico de configuração (versionado)
 ├── config.local.json         # Configuração real da sua máquina (gitignored)
-├── package.json              # Scripts Node sem dependências externas
+├── package.json              # Scripts Node e build do Excalidraw (postinstall -> build:whiteboard)
 ├── LICENSE                   # Licença MIT
+├── scripts/
+│   └── build-whiteboard.mjs  # Gera web/vendor/excalidraw/ (bundle, CSS e fontes locais)
 ├── src/
 │   ├── config.mjs            # Carrega/salva config (--config, CROM_STUDIO_CONFIG, config.local.json)
-│   ├── sync.mjs              # Varre workspaces .md (ignorando symlinks e ocultos), RSS e Kdenlive -> data/
+│   ├── sync.mjs              # Varre workspaces .md/.excalidraw (ignorando symlinks e ocultos) -> data/
+│   ├── boards.mjs            # Persistência atômica e segura de quadros (<workspace>/quadros/*.excalidraw)
 │   ├── versioning.mjs        # Motor das 2 dinâmicas (.roteiro-git/<docKey>/revisoes e versoes)
 │   ├── roteiro-git.mjs       # CLI de versionamento (crom-studio roteiro ...)
+│   ├── whiteboard-entry.jsx  # Wrapper React/Excalidraw + dock Foco em Nodes + ponte postMessage
 │   └── server.mjs            # Servidor HTTP + API REST + SPA fallback + fs.watch/SSE (/api/events)
 ├── web/
-│   ├── index.html            # Shell HTML (scripts clássicos com defer para suportar file://)
-│   ├── styles.css            # Tema escuro translúcido, inspetor direito, Modo Foco, Mapa e modais responsivos
+│   ├── index.html            # Shell HTML (barra de abas retrátil, modais e menu de contexto)
+│   ├── styles.css            # Tema escuro borderless, abas, fluxograma, quadro, inspetor e modais
 │   ├── markdown.js           # Parser/serializador YAML + renderizador Markdown seguro
-│   ├── app.js                # SPA multi-canal, URLs amigáveis, Mapa, Configurações, Git/Diff e SSE
+│   ├── app.js                # SPA multi-canal, abas, menu contextual, Fluxograma, Quadro, Git/Diff e SSE
+│   ├── excalidraw-frame.html # Host isolado do Excalidraw local
+│   ├── vendor/               # Assets compilados do Excalidraw (gitignored)
 │   └── data.js               # Bundle JS gerado pelo sync (gitignored)
 ├── data/                     # Caches RSS por canal e data.json/data.js gerados (gitignored)
 ├── assets/                   # Ícones da aplicação e bandeja (crom-logo.png, crom-tray.png, crom-tray-off.png, .svg)
@@ -117,7 +133,15 @@ Caminhos relativos são resolvidos a partir do diretório do arquivo de configur
 
 ## Como Executar
 
-### 1. Sincronizar arquivos Markdown e caches
+### 1. Instalar dependências e compilar o Excalidraw local
+
+```bash
+npm install
+# O script postinstall executa automaticamente: npm run build:whiteboard
+# (gera web/vendor/excalidraw/bundle.js, excalidraw.css e fonts/ localmente)
+```
+
+### 2. Sincronizar arquivos Markdown, quadros e caches
 
 ```bash
 npm run sync
@@ -125,14 +149,14 @@ npm run sync
 npm run sync:youtube
 ```
 
-### 2. Iniciar o servidor web diretamente
+### 3. Iniciar o servidor web diretamente
 
 ```bash
 npm start
-# acesse http://127.0.0.1:4173/canal-principal (ou /mrj, /crom, /mrj/mapa, /mrj/configuracoes)
+# acesse http://127.0.0.1:4173/canal-principal (ou /mrj, /crom, /mrj/mapa, /mrj/quadro, /mrj/configuracoes)
 ```
 
-### 3. Iniciar com o ícone na bandeja do sistema (recomendado no Desktop Linux)
+### 4. Iniciar com o ícone na bandeja do sistema (recomendado no Desktop Linux)
 
 ```bash
 ./bin/crom-studio --tray --open
@@ -242,6 +266,14 @@ Quando `kdenliveRoot` está configurado:
 - `POST /api/doc` → cria novo `.md` com revisão inicial `r001` (`{ channel, folder, filename, content }`)
 - `PUT /api/doc` → atualiza/move `.md` registrando revisão (`{ channel, path, newPath, content, version, commitMessage, author }`)
 - `DELETE /api/doc` → remove `.md` e seu diretório `.roteiro-git/<docKey>` (`?channel=...&path=...`)
+
+### Quadros Excalidraw (`<workspace>/quadros/*.excalidraw`)
+
+- `GET /api/boards?channel=<canal>` → lista quadros salvos no workspace (`{ ok, channel, boards }`)
+- `GET /api/boards/item?channel=<canal>&id=<slug>` → retorna metadados e cena Excalidraw v2 (`{ ok, channel, board, scene }`)
+- `POST /api/boards` → cria quadro atomically (`{ channel, title, id?, elements?, appState?, files?, preferredMode? }`)
+- `PUT /api/boards` → salva elementos, `appState`, `files`, título, `preferredMode` (`excalidraw` | `nodes`) e `renameTo` opcional
+- `DELETE /api/boards?channel=<canal>&id=<slug>` → remove o arquivo `.excalidraw` do workspace com validação estrita de slug e sem symlinks
 
 ### Git de Roteiros & Versões Alternativas
 

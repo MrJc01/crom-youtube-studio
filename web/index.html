@@ -51,6 +51,10 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/><line x1="9" y1="3" x2="9" y2="18"/><line x1="15" y1="6" x2="15" y2="21"/></svg>
           </button>
 
+          <button class="nav-item" data-view="whiteboard" title="Quadro & Fluxos (Excalidraw + Nodes)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="6" rx="1.5"/><rect x="14" y="4" width="7" height="6" rx="1.5"/><rect x="9" y="15" width="7" height="6" rx="1.5"/><path d="M6.5 9v2.5a2 2 0 0 0 2 2h4"/><path d="M17.5 10v1.5a2 2 0 0 1-2 2h-3v1.5"/></svg>
+          </button>
+
           <button class="nav-item" data-view="pipeline" title="Pipeline Kanban">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="5" height="16" rx="1.4"/><rect x="10" y="4" width="5" height="11" rx="1.4"/><rect x="17" y="4" width="4" height="14" rx="1.4"/></svg>
           </button>
@@ -87,6 +91,18 @@
 
       <!-- Área Principal -->
       <div class="main-column">
+        <div class="tabstrip-wrap" id="studioTabstripWrap">
+          <div class="tabstrip-bar" id="studioTabstripBar">
+            <div class="tabstrip-tabs" id="studioTabsList" role="tablist" aria-label="Abas abertas"></div>
+            <button type="button" class="tabstrip-add-btn" id="newTabBtn" title="Nova aba (+)">+</button>
+            <button type="button" class="tabstrip-collapse-btn" id="collapseTabstripBtn" title="Ocultar barra de abas">▴</button>
+          </div>
+          <button type="button" class="tabstrip-pull-handle" id="tabstripPullHandle" title="Mostrar / ocultar abas" aria-expanded="false">
+            <span class="tph-arrow">▾</span>
+            <span class="tph-count" id="tabstripCountBadge"></span>
+          </button>
+        </div>
+
         <header class="topbar">
           <div class="topbar-left">
             <h1 class="page-title" id="pageTitle">Visão Geral</h1>
@@ -193,6 +209,13 @@
         <span class="fab-menu-text">
           <strong>Nova Ideia</strong>
           <small>Registrar pauta em 01-ideias/</small>
+        </span>
+      </button>
+      <button type="button" class="fab-menu-item" data-fab-action="whiteboard">
+        <span class="fab-menu-icon">◈</span>
+        <span class="fab-menu-text">
+          <strong>Novo Quadro (Excalidraw)</strong>
+          <small>Diagrama visual e Foco em Nodes</small>
         </span>
       </button>
       <button type="button" class="fab-menu-item hidden" id="fabVersionActionBtn" data-fab-action="version">
@@ -401,6 +424,73 @@
       <div class="drawer-body" id="notifBody"></div>
     </aside>
   </div>
+
+  <!-- Modal: Criar / Renomear Quadro (Excalidraw) -->
+  <div class="modal-backdrop hidden" id="wbBoardModal">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="wbBoardModalTitle" style="max-width:460px;">
+      <div class="modal-head">
+        <h2 id="wbBoardModalTitle">Novo Quadro</h2>
+        <button class="icon-close" data-close-modal="wbBoardModal">✕</button>
+      </div>
+      <form id="wbBoardForm" class="modal-form">
+        <label>
+          <span>Título do quadro</span>
+          <input type="text" id="wbBoardTitleInput" placeholder="Ex.: Fluxo Trilogia GTA 6" required>
+        </label>
+        <label id="wbBoardSlugField">
+          <span>Identificador / Slug (opcional)</span>
+          <input type="text" id="wbBoardSlugInput" placeholder="Ex.: fluxo-gta-6" pattern="[a-z0-9][a-z0-9_-]*">
+        </label>
+        <label id="wbBoardModeField">
+          <span>Modo inicial</span>
+          <select id="wbBoardModeSelect">
+            <option value="excalidraw">✎ Excalidraw Completo</option>
+            <option value="nodes">◈ Foco em Nodes</option>
+          </select>
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" data-close-modal="wbBoardModal">Cancelar</button>
+          <button type="submit" class="btn-primary" id="wbBoardSubmitBtn">Criar Quadro</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Confirmar Exclusão de Quadro -->
+  <div class="modal-backdrop hidden" id="wbDeleteConfirmModal">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="wbDeleteModalTitle" style="max-width:420px;">
+      <div class="modal-head">
+        <h2 id="wbDeleteModalTitle">Excluir Quadro</h2>
+        <button class="icon-close" data-close-modal="wbDeleteConfirmModal">✕</button>
+      </div>
+      <div class="modal-form">
+        <p style="margin:0; font-size:13px; color:var(--text-2);">
+          Deseja excluir o quadro <strong id="wbDeleteConfirmName" style="color:var(--text-1);"></strong>? O arquivo <code>.excalidraw</code> no disco será removido.
+        </p>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" data-close-modal="wbDeleteConfirmModal">Cancelar</button>
+          <button type="button" class="btn-primary" id="wbDeleteConfirmBtn" style="background:linear-gradient(135deg, #e11d48, #f43f5e);">Excluir Quadro</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Inserir Roteiro no Quadro -->
+  <div class="modal-backdrop hidden" id="wbScriptPickerModal">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="wbScriptPickerTitle">
+      <div class="modal-head">
+        <h2 id="wbScriptPickerTitle">Inserir Roteiro no Quadro</h2>
+        <button class="icon-close" data-close-modal="wbScriptPickerModal">✕</button>
+      </div>
+      <div class="modal-form">
+        <input type="search" class="search-box-sm" id="wbScriptSearchInput" placeholder="Filtrar roteiros por título, série ou pasta..." style="margin-bottom:0;">
+        <div class="wb-script-picker-list" id="wbScriptPickerList"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Menu de Contexto Personalizado (Botão Direito) -->
+  <div class="ctx-menu hidden" id="studioContextMenu" role="menu" aria-label="Menu de contexto"></div>
 
   <!-- Toast feedback -->
   <div class="toast-stack" id="toastStack" aria-live="polite"></div>

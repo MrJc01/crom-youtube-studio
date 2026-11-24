@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Quadro Excalidraw — Crom YouTube Studio</title>
+  <link rel="stylesheet" href="/vendor/excalidraw/excalidraw.css" />
+  <link rel="stylesheet" href="/vendor/excalidraw/bundle.css" />
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: #0e0f17;
+      color: #f5f7fc;
+      font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    #excalidraw-root,
+    .wb-frame-root,
+    .wb-canvas-host {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: #0e0f17;
+    }
+
+    .wb-canvas-host .excalidraw-wrapper,
+    .wb-canvas-host .excalidraw {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Ajustes do modo Foco em Nodes */
+    .wb-frame-root.is-node-focus .welcome-screen-center,
+    .wb-frame-root.is-node-focus .welcome-screen-decor {
+      display: none !important;
+    }
+
+    .wb-frame-root.is-node-focus .App-toolbar-container {
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(-10px) scale(0.95);
+      transition: opacity 0.16s ease, transform 0.16s ease;
+    }
+
+    .wb-frame-root.is-node-focus .App-menu__left {
+      opacity: 0.45;
+      transition: opacity 0.16s ease;
+    }
+
+    .wb-frame-root.is-node-focus .App-menu__left:hover,
+    .wb-frame-root.is-node-focus .App-menu__left:focus-within {
+      opacity: 1;
+    }
+
+    .wb-frame-root.is-node-focus .layer-ui__wrapper__top-right {
+      opacity: 0.55;
+      transition: opacity 0.16s ease;
+    }
+
+    .wb-frame-root.is-node-focus .layer-ui__wrapper__top-right:hover {
+      opacity: 1;
+    }
+
+    .wb-frame-root.is-node-focus .undo-redo-buttons,
+    .wb-frame-root.is-node-focus .zoom-actions,
+    .wb-frame-root.is-node-focus .layer-ui__wrapper__footer-left {
+      opacity: 1 !important;
+      pointer-events: auto !important;
+    }
+
+    /* Dock flutuante Node Quick-Bar */
+    .node-dock {
+      position: fixed;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 60;
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 6px;
+      max-width: calc(100vw - 128px);
+      padding: 7px 12px;
+      border-radius: 14px;
+      background: rgba(18, 19, 30, 0.92);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.48), 0 0 0 1px rgba(225, 45, 120, 0.14);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+    }
+
+    .node-dock-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 0 2px;
+    }
+
+    .node-color-dot {
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      border: 2px solid rgba(255, 255, 255, 0.18);
+      background: var(--dot-color, #f97316);
+      cursor: pointer;
+      padding: 0;
+      transition: transform 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease;
+    }
+
+    .node-color-dot:hover {
+      transform: scale(1.14);
+    }
+
+    .node-color-dot.is-active {
+      border-color: #ffffff;
+      box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25);
+      transform: scale(1.16);
+    }
+
+    .node-dock-sep {
+      width: 1px;
+      height: 20px;
+      background: rgba(255, 255, 255, 0.11);
+      margin: 0 2px;
+    }
+
+    .node-dock-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 30px;
+      padding: 0 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      background: rgba(255, 255, 255, 0.045);
+      color: #eef1fa;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.14s ease, border-color 0.14s ease, transform 0.12s ease;
+    }
+
+    .node-dock-btn:hover {
+      background: rgba(255, 255, 255, 0.11);
+      border-color: rgba(255, 255, 255, 0.22);
+    }
+
+    .node-dock-btn:active {
+      transform: translateY(1px);
+    }
+
+    .node-dock-btn.is-primary {
+      background: linear-gradient(135deg, #e12d78, #5b4cf5);
+      border-color: rgba(255, 255, 255, 0.22);
+      color: #ffffff;
+    }
+
+    .node-dock-btn.is-primary:hover {
+      filter: brightness(1.08);
+    }
+
+    .node-dock-btn.node-dock-toggle.is-dashed {
+      border-style: dashed;
+      border-color: rgba(56, 189, 248, 0.45);
+      color: #7dd3fc;
+    }
+
+    .node-dock-btn.is-subtle {
+      background: transparent;
+      border-color: rgba(255, 255, 255, 0.08);
+      color: #aeb5ca;
+    }
+
+    .node-dock-btn.is-subtle:hover {
+      color: #ffffff;
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .node-dock-status {
+      font-size: 11px;
+      font-weight: 600;
+      color: #36d399;
+      padding: 0 4px;
+      white-space: nowrap;
+    }
+
+    /* Pílula discreta no modo Excalidraw completo */
+    .wb-mini-focus-wrap {
+      position: fixed;
+      bottom: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 40;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      pointer-events: none;
+    }
+
+    .wb-mini-focus-btn,
+    .wb-mini-status {
+      pointer-events: auto;
+      height: 30px;
+      padding: 0 12px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      background: rgba(18, 19, 30, 0.86);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: #e4e8f5;
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+      backdrop-filter: blur(10px);
+    }
+
+    .wb-mini-focus-btn {
+      cursor: pointer;
+      transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+    }
+
+    .wb-mini-focus-btn:hover {
+      background: rgba(225, 45, 120, 0.22);
+      border-color: rgba(225, 45, 120, 0.55);
+      color: #ffffff;
+    }
+
+    .wb-mini-status {
+      color: #36d399;
+      font-size: 11px;
+    }
+
+    /* Fallback quando bundle.js não existir */
+    .wb-fallback-wrap {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: #0e0f17;
+      z-index: 100;
+    }
+
+    .wb-fallback-card {
+      max-width: 480px;
+      width: 100%;
+      padding: 24px;
+      border-radius: 16px;
+      background: rgba(24, 26, 38, 0.94);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      box-shadow: 0 20px 44px rgba(0, 0, 0, 0.5);
+    }
+
+    .wb-fallback-card h2 {
+      margin: 0 0 10px;
+      font-size: 18px;
+      color: #f5f7fc;
+    }
+
+    .wb-fallback-card p {
+      margin: 0 0 12px;
+      font-size: 13.5px;
+      line-height: 1.55;
+      color: #aeb5ca;
+    }
+
+    .wb-fallback-card code {
+      display: block;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: rgba(9, 10, 17, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      color: #36d399;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12.5px;
+    }
+  </style>
+</head>
+<body>
+  <div id="excalidraw-root">
+    <div class="wb-fallback-wrap" id="wbFallbackCard" hidden>
+      <div class="wb-fallback-card">
+        <h2>Quadro Excalidraw não compilado</h2>
+        <p>
+          O bundle local do Excalidraw (<code>/vendor/excalidraw/bundle.js</code>) ainda não foi gerado ou não pôde ser carregado.
+        </p>
+        <p>Execute o comando abaixo na pasta do Crom YouTube Studio e recarregue a página:</p>
+        <code>npm install &amp;&amp; npm run build:whiteboard</code>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.EXCALIDRAW_ASSET_PATH = "/vendor/excalidraw/";
+    function showWbFallback(reason) {
+      var el = document.getElementById("wbFallbackCard");
+      if (el) {
+        el.hidden = false;
+        if (reason) {
+          var p = document.createElement("p");
+          p.style.color = "#f45b69";
+          p.style.marginTop = "10px";
+          p.style.marginBottom = "0";
+          p.textContent = "Detalhes: " + reason;
+          el.querySelector(".wb-fallback-card").appendChild(p);
+        }
+      }
+    }
+  </script>
+  <script
+    src="/vendor/excalidraw/bundle.js"
+    onerror="showWbFallback('Falha ao carregar /vendor/excalidraw/bundle.js')"
+    onload="if (!window.__CROM_WB_MOUNTED__) showWbFallback('O script carregou mas o componente Excalidraw não foi montado.')"
+  ></script>
+</body>
+</html>

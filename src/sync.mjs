@@ -3,6 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DATA_DIR, WEB_DIR, loadConfig, getCliArg } from './config.mjs';
 import { getVersioningSummary } from './versioning.mjs';
+import { listBoards } from './boards.mjs';
 
 const IGNORED_DIRS = new Set(['studio', '.git', 'node_modules']);
 
@@ -561,6 +562,8 @@ function indexChannel(channelKey, channelCfg) {
     kdenliveFolder: channelCfg.kdenliveFolder || 'videos',
   };
 
+  const boards = listBoards(channelCfg.workspacePath);
+
   return {
     key: channelKey,
     workspaceName: `${mergedChannel.name} Studio`,
@@ -572,6 +575,7 @@ function indexChannel(channelKey, channelCfg) {
     folders: Array.from(folderSet).sort(),
     series: Array.from(seriesSet),
     docs,
+    boards,
   };
 }
 
