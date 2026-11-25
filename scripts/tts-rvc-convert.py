@@ -45,11 +45,10 @@ def main() -> int:
 
     from rvc_python.infer import RVCInference
 
-    rvc = RVCInference(device=device)
-    load_kwargs = {"model_path": model_path}
-    if index_path and os.path.exists(index_path):
-        load_kwargs["index_path"] = index_path
-    rvc.load_model(**load_kwargs)
+    rvc_dev = "cpu:0" if device == "cpu" else device
+    rvc = RVCInference(models_dir=os.path.dirname(os.path.abspath(model_path)), device=rvc_dev)
+    resolved_index = index_path if (index_path and os.path.exists(index_path)) else ""
+    rvc.load_model(model_path, version="v2", index_path=resolved_index)
     rvc.set_params(
         f0method=f0_method,
         f0up_key=f0_up_key,
