@@ -565,6 +565,7 @@ function bindPrompterEvents() {
   const playBtn = document.getElementById('prompterPlayBtn');
   const resetBtn = document.getElementById('prompterResetBtn');
   const speedInp = document.getElementById('prompterSpeed');
+  const speedVal = document.getElementById('prompterSpeedVal');
   const sizeInp = document.getElementById('prompterSize');
   const mirrorBtn = document.getElementById('prompterMirrorBtn');
   const stage = document.getElementById('prompterStage');
@@ -572,12 +573,30 @@ function bindPrompterEvents() {
 
   if (!stage || !playBtn) return;
 
+  state.prompter.scrollPos = stage.scrollTop;
+
   const tick = (ts) => {
     if (!state.prompter.playing) return;
     if (!state.prompter.lastTs) state.prompter.lastTs = ts;
     const dt = Math.min(80, ts - state.prompter.lastTs) / 1000;
     state.prompter.lastTs = ts;
-    stage.scrollTop += state.prompter.speed * 26 * dt;
+
+    // Preserve user manual scroll, then accumulate fractional sub-pixels cleanly
+    if (Math.abs(stage.scrollTop - Math.floor(state.prompter.scrollPos)) > 3) {
+      state.prompter.scrollPos = stage.scrollTop;
+    }
+    const maxScroll = Math.max(0, stage.scrollHeight - stage.clientHeight);
+    state.prompter.scrollPos = Math.min(
+      maxScroll,
+      state.prompter.scrollPos + state.prompter.speed * 22 * dt
+    );
+    stage.scrollTop = Math.floor(state.prompter.scrollPos);
+
+    if (maxScroll > 0 && stage.scrollTop >= maxScroll) {
+      stopPrompter();
+      playBtn.textContent = '▶ Iniciar Rolagem';
+      return;
+    }
     state.prompter.rafId = requestAnimationFrame(tick);
   };
 
@@ -585,6 +604,7 @@ function bindPrompterEvents() {
     state.prompter.playing = !state.prompter.playing;
     playBtn.textContent = state.prompter.playing ? '⏸ Pausar (Espaço)' : '▶ Iniciar Rolagem';
     if (state.prompter.playing) {
+      state.prompter.scrollPos = stage.scrollTop;
       state.prompter.lastTs = 0;
       state.prompter.rafId = requestAnimationFrame(tick);
     } else {
@@ -592,8 +612,14 @@ function bindPrompterEvents() {
     }
   };
 
-  resetBtn.onclick = () => stage.scrollTo({ top: 0, behavior: 'smooth' });
-  speedInp.oninput = () => { state.prompter.speed = Number(speedInp.value); };
+  resetBtn.onclick = () => {
+    state.prompter.scrollPos = 0;
+    stage.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  speedInp.oninput = () => {
+    state.prompter.speed = Number(speedInp.value);
+    if (speedVal) speedVal.textContent = `${state.prompter.speed.toFixed(1)}x`;
+  };
   sizeInp.oninput = () => {
     state.prompter.fontSize = Number(sizeInp.value);
     if (textEl) textEl.style.fontSize = `${state.prompter.fontSize}px`;
@@ -1024,7 +1050,7 @@ export function renderScriptsView(container) {
               <button type="button" class="btn-sm" id="prompterResetBtn">↺ Topo</button>
             </div>
             <div class="prompter-ctrl-group">
-              <label>Velocidade <input type="range" id="prompterSpeed" min="0.6" max="8" step="0.4" value="${state.prompter.speed}"></label>
+              <label>Velocidade <strong id="prompterSpeedVal" style="min-width:34px; display:inline-block; text-align:right;">${Number(state.prompter.speed).toFixed(1)}x</strong> <input type="range" id="prompterSpeed" min="0.1" max="8" step="0.1" value="${state.prompter.speed}"></label>
               <label>Fonte <input type="range" id="prompterSize" min="22" max="54" step="2" value="${state.prompter.fontSize}"></label>
               <button type="button" class="btn-sm" id="prompterMirrorBtn">${state.prompter.mirrored ? '⇄ Normal' : '⇄ Espelhar'}</button>
             </div>

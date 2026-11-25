@@ -639,8 +639,8 @@ export function renderRecorderView(container) {
           <button type="button" class="btn-sm btn-accent" id="recPrompterPlayBtn">${rec.prompterPlaying ? '⏸ Pausar Teleprompter' : '▶ Play Teleprompter'}</button>
           <button type="button" class="btn-sm" id="recPrompterTopBtn">↺ Topo</button>
           <label style="display:inline-flex; align-items:center; gap:6px; font-size:11.5px; color:var(--text-2); margin-left:auto;">
-            <span>Velocidade</span>
-            <input type="range" id="recPrompterSpeedRange" min="0.5" max="5.5" step="0.5" value="${rec.prompterSpeed}" style="width:90px;">
+            <span>Velocidade <strong id="recPrompterSpeedVal">${Number(rec.prompterSpeed).toFixed(1)}x</strong></span>
+            <input type="range" id="recPrompterSpeedRange" min="0.1" max="6" step="0.1" value="${rec.prompterSpeed}" style="width:96px;">
           </label>
         </div>
 
@@ -947,9 +947,12 @@ export function renderRecorderView(container) {
   });
   document.getElementById('recPrompterSpeedRange')?.addEventListener('input', (e) => {
     state.recorder.prompterSpeed = Number(e.target.value);
+    const lbl = document.getElementById('recPrompterSpeedVal');
+    if (lbl) lbl.textContent = `${state.recorder.prompterSpeed.toFixed(1)}x`;
   });
   document.getElementById('recPrompterTopBtn')?.addEventListener('click', () => {
     const box = document.getElementById('recPrompterBox');
+    state.recorder.prompterScrollPos = 0;
     if (box) box.scrollTop = 0;
   });
   document.getElementById('recPrompterPlayBtn')?.addEventListener('click', () => {
@@ -957,14 +960,24 @@ export function renderRecorderView(container) {
     const btn = document.getElementById('recPrompterPlayBtn');
     if (btn) btn.textContent = state.recorder.prompterPlaying ? '⏸ Pausar Teleprompter' : '▶ Play Teleprompter';
     if (state.recorder.prompterPlaying) {
+      const boxStart = document.getElementById('recPrompterBox');
+      state.recorder.prompterScrollPos = boxStart ? boxStart.scrollTop : 0;
       state.recorder.prompterLastTs = performance.now();
       const step = (now) => {
         const box = document.getElementById('recPrompterBox');
         if (!state.recorder.prompterPlaying || !box || state.view !== 'recorder') return;
-        const dt = (now - state.recorder.prompterLastTs) / 1000;
+        const dt = Math.min(80, now - state.recorder.prompterLastTs) / 1000;
         state.recorder.prompterLastTs = now;
-        box.scrollTop += state.recorder.prompterSpeed * 26 * dt;
-        if (box.scrollTop + box.clientHeight >= box.scrollHeight - 2) {
+        if (Math.abs(box.scrollTop - Math.floor(state.recorder.prompterScrollPos)) > 3) {
+          state.recorder.prompterScrollPos = box.scrollTop;
+        }
+        const maxScroll = Math.max(0, box.scrollHeight - box.clientHeight);
+        state.recorder.prompterScrollPos = Math.min(
+          maxScroll,
+          state.recorder.prompterScrollPos + state.recorder.prompterSpeed * 22 * dt
+        );
+        box.scrollTop = Math.floor(state.recorder.prompterScrollPos);
+        if (maxScroll > 0 && box.scrollTop >= maxScroll) {
           state.recorder.prompterPlaying = false;
           if (btn) btn.textContent = '▶ Play Teleprompter';
           return;
