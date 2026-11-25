@@ -42,7 +42,6 @@ def main() -> int:
         sys.stderr.write("Nenhum trecho de texto para sintetizar\n")
         return 5
 
-    torch.set_num_threads(max(1, min(10, os.cpu_count() or 4)))
     load_kwargs = {
         "language": lang,
         "temp": temperature,

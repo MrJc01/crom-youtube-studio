@@ -54,10 +54,10 @@ export const BUILTIN_VOICE_PRESETS = [
     language: 'portuguese_24l',
     voiceFile: 'mrj_pt24l_ref01.safetensors',
     temperature: 0.3,
-    samplerDecodeSteps: 4,
-    noiseClamp: 2.5,
+    samplerDecodeSteps: 1,
+    noiseClamp: null,
     pauseMs: 220,
-    loudnorm: true,
+    loudnorm: false,
     effects: {
       pitchShift: 1.0,
       reverb: 0,
@@ -76,17 +76,17 @@ export const BUILTIN_VOICE_PRESETS = [
   },
   {
     id: 'mrj-pocket-hq',
-    name: 'Voz do MrJ (Alta Fidelidade • 24s Limpa)',
-    description: 'Pocket TTS portuguese_24l com 6 passos de decodificação, noise clamp 2.5 e referência limpa de 24s.',
+    name: 'Voz do MrJ (Ref Trimada • 4 Passos)',
+    description: 'Pocket TTS portuguese_24l com 4 passos de decodificação, noise clamp 2.5 e ref01 sem silêncio inicial.',
     builtin: true,
     engine: 'pocket-tts',
     language: 'portuguese_24l',
-    voiceFile: 'mrj_pt24l_v2_24s_limpa.safetensors',
-    temperature: 0.24,
-    samplerDecodeSteps: 6,
+    voiceFile: 'mrj_pt24l_ref01_trim.safetensors',
+    temperature: 0.26,
+    samplerDecodeSteps: 4,
     noiseClamp: 2.5,
     pauseMs: 220,
-    loudnorm: true,
+    loudnorm: false,
     effects: {
       pitchShift: 1.0,
       reverb: 0,
@@ -1223,7 +1223,11 @@ async function applyRvcConversion(inputWav, outputWav, rvcCfg, env, tmpDir) {
 async function renderSegmentToWav(text, preset, destWav, env, tmpDir) {
   const rawWav = path.join(tmpDir, `raw-${crypto.randomBytes(4).toString('hex')}.wav`);
   if (preset.engine === 'pocket-tts') {
-    const chunks = splitTextIntoChunks(text, 260);
+    const chunks = [];
+    for (const sent of String(text || '').split(/(?<=[.!?…])\s+/)) {
+      if (!sent.trim()) continue;
+      chunks.push(...splitTextIntoChunks(sent, 160));
+    }
     if (!chunks.length) {
       throw httpError('Texto vazio após limpeza para Pocket TTS.', 400);
     }
