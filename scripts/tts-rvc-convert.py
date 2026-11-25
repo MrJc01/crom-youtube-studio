@@ -5,6 +5,9 @@ import json
 import os
 import sys
 
+# Fairseq (hubert_base.pt) e checkpoints RVC exigem weights_only=False no PyTorch 2.6+
+os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
+
 
 def main() -> int:
     if len(sys.argv) < 2:
