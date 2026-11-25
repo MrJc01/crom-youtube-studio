@@ -140,12 +140,13 @@ test('CRUD de presets de voz inclui crom-j (1.50x, pitch 0.90x) e mrj-pocket', a
     assert.equal(cromJ.effects.pitchShift, 0.9);
     assert.ok(mrjPocket);
     assert.equal(mrjPocket.engine, 'pocket-tts');
-    assert.equal(mrjPocket.temperature, 0.3);
-    assert.equal(mrjPocket.samplerDecodeSteps, 1);
-    assert.equal(mrjPocket.noiseClamp, null);
+    assert.equal(mrjPocket.voiceFile, 'mrj_pt24l_ref01_trim.safetensors');
+    assert.equal(mrjPocket.temperature, 0.26);
+    assert.equal(mrjPocket.samplerDecodeSteps, 4);
+    assert.equal(mrjPocket.noiseClamp, 2.5);
     assert.ok(mrjHq);
     assert.equal(mrjHq.voiceFile, 'mrj_pt24l_ref01_trim.safetensors');
-    assert.equal(mrjHq.samplerDecodeSteps, 4);
+    assert.equal(mrjHq.samplerDecodeSteps, 6);
     assert.equal(mrjHq.noiseClamp, 2.5);
     assert.equal(mrjHq.rvc.f0Method, 'rmvpe');
 
