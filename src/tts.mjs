@@ -20,6 +20,7 @@ import { RECORDINGS_DIR_NAME, resolveFfmpegPath } from './recordings.mjs';
 import { readRefContent } from './versioning.mjs';
 
 const execFileAsync = promisify(execFile);
+const LONG_TTS_TIMEOUT_MS = 90 * 60 * 1000; // 90 min para roteiros longos (10–15+ min de áudio)
 
 export const NARRATIONS_DIR_NAME = 'narracoes';
 const STUDIO_DATA_DIR_NAME = '.studio-data';
@@ -45,6 +46,35 @@ export const DEFAULT_AUDIO_CATEGORIES = [
 ];
 
 export const BUILTIN_VOICE_PRESETS = [
+  {
+    id: 'mrj-nivel2-rvc',
+    name: 'Voz do MrJ — Nível 2 (Pocket + RVC)',
+    description: 'Combo aprovado (ab_06): Pocket TTS ref trimada 4 passos + conversão de timbre RVC v2 (mrj_rvc.pth).',
+    builtin: true,
+    engine: 'pocket-tts',
+    language: 'portuguese_24l',
+    voiceFile: 'mrj_pt24l_ref01_trim.safetensors',
+    temperature: 0.26,
+    samplerDecodeSteps: 4,
+    noiseClamp: 2.5,
+    pauseMs: 220,
+    loudnorm: false,
+    effects: {
+      pitchShift: 1.0,
+      reverb: 0,
+      bassDb: 0,
+      trebleDb: 0,
+    },
+    rvc: {
+      enabled: true,
+      modelName: 'mrj_rvc.pth',
+      f0UpKey: 0,
+      f0Method: 'rmvpe',
+      indexRate: 0.75,
+      protect: 0.33,
+      rmsMixRate: 0.25,
+    },
+  },
   {
     id: 'mrj-pocket',
     name: 'Voz do MrJ (Pocket TTS PT-BR)',
@@ -1072,7 +1102,7 @@ async function applyFfmpegPostProcessing(inputWav, outputWav, preset, env) {
     args.push('-ar', '48000', '-ac', '1');
   }
   args.push('-c:a', 'pcm_s16le', outputWav);
-  await execFileAsync(env.ffmpeg.path, args, { timeout: 180_000, maxBuffer: 10 * 1024 * 1024 });
+  await execFileAsync(env.ffmpeg.path, args, { timeout: LONG_TTS_TIMEOUT_MS, maxBuffer: 20 * 1024 * 1024 });
 }
 
 async function synthesizePiperRaw(text, preset, rawOutWav, env) {
@@ -1118,7 +1148,7 @@ async function synthesizePiperRaw(text, preset, rawOutWav, env) {
     const child = execFile(
       env.piper.binaryPath,
       args,
-      { env: piperEnv, timeout: 180_000, maxBuffer: 10 * 1024 * 1024 },
+      { env: piperEnv, timeout: LONG_TTS_TIMEOUT_MS, maxBuffer: 20 * 1024 * 1024 },
       (err, stdout, stderr) => {
         if (err) {
           reject(httpError(`Erro ao executar Piper TTS: ${stderr || err.message}`, 500));
@@ -1168,8 +1198,8 @@ async function synthesizePocketRaw(chunks, preset, rawOutWav, env, tmpDir) {
   try {
     await execFileAsync(env.pocketTts.pythonPath, [env.pocketTts.batchScript, jobFile], {
       cwd: env.pocketTts.dir,
-      timeout: 300_000,
-      maxBuffer: 10 * 1024 * 1024,
+      timeout: LONG_TTS_TIMEOUT_MS,
+      maxBuffer: 20 * 1024 * 1024,
     });
   } catch (err) {
     throw httpError(`Erro ao executar Pocket TTS: ${err?.stderr || err.message}`, 500);
@@ -1212,8 +1242,8 @@ async function applyRvcConversion(inputWav, outputWav, rvcCfg, env, tmpDir) {
   try {
     await execFileAsync(env.rvc.pythonPath, [env.rvc.convertScript, jobFile], {
       cwd: env.rvc.dir,
-      timeout: 300_000,
-      maxBuffer: 10 * 1024 * 1024,
+      timeout: LONG_TTS_TIMEOUT_MS,
+      maxBuffer: 20 * 1024 * 1024,
     });
   } catch (err) {
     throw httpError(`Erro na conversão RVC v2: ${err?.stderr || err.message}`, 500);

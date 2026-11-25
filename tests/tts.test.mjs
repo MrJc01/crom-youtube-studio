@@ -129,9 +129,14 @@ test('CRUD de presets de voz inclui crom-j (1.50x, pitch 0.90x) e mrj-pocket', a
   const { tmpDir, wsPath } = makeTempTtsWorkspace();
   try {
     const presets = listVoicePresets(wsPath);
+    const mrjNivel2 = presets.find((p) => p.id === 'mrj-nivel2-rvc');
     const cromJ = presets.find((p) => p.id === 'crom-j');
     const mrjPocket = presets.find((p) => p.id === 'mrj-pocket');
     const mrjHq = presets.find((p) => p.id === 'mrj-pocket-hq');
+    assert.ok(mrjNivel2);
+    assert.equal(mrjNivel2.rvc.enabled, true);
+    assert.equal(mrjNivel2.rvc.modelName, 'mrj_rvc.pth');
+    assert.equal(mrjNivel2.samplerDecodeSteps, 4);
     assert.ok(cromJ);
     assert.equal(cromJ.lengthScale, 1.5);
     assert.equal(cromJ.noiseScale, 0.67);

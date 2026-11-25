@@ -333,6 +333,7 @@ export function createStudioServer(config) {
   };
 
   const server = http.createServer(requestHandler);
+  server.requestTimeout = 0; // Permite geração longa de TTS/RVC (10+ min) sem corte HTTP
   server.stateCache = stateCache;
   server.remoteManager = remoteManager;
   server.watchHub = watchHub;
