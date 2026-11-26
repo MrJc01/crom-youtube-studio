@@ -9,6 +9,7 @@ import {
   createVersion,
   restoreRevision,
   promoteVersion,
+  setDefaultVersion,
   deleteVersion,
   diffTargets,
 } from './versioning.mjs';
@@ -24,6 +25,7 @@ Subcomandos (Dinâmica 1 = Git de revisões | Dinâmica 2 = Versões diferentes)
   diff         Compara linha a linha duas referências (--de e --para)
   restaurar    Restaura o conteúdo de uma revisão rNNN criando novo commit
   promover     Promove uma versão alternativa para o .md principal (só com OK do dono)
+  versao-inicial  Define qual versão abre primeiro ao abrir o roteiro no Studio
   excluir-versao  Remove uma versão alternativa (não permite excluir "principal")
 
 Opções comuns:
@@ -87,7 +89,12 @@ function main() {
         console.log(JSON.stringify(result, null, 2));
       } else {
         console.log(`Arquivo: ${result.docPath} (${result.initialized ? 'versionado' : 'sem commits'})`);
-        console.log('Versões:', result.versions.map((v) => `${v.name} [${v.headRev || '-'}]`).join(' | '));
+        console.log(
+          'Versões:',
+          result.versions
+            .map((v) => `${v.isDefault ? '★ ' : ''}${v.name} [${v.headRev || '-'}]`)
+            .join(' | ')
+        );
         console.log('Revisões:');
         for (const r of result.revisions) {
           console.log(`  ${r.id}  (${r.version}) [${r.kind}] +${r.added}/-${r.removed}  ${r.author}: ${r.message} (${r.createdAt})`);
@@ -179,6 +186,14 @@ function main() {
       break;
     }
 
+    case 'versao-inicial':
+    case 'inicial': {
+      const versionName = getCliArg(argv, '--versao') || getCliArg(argv, '--nome') || 'principal';
+      result = setDefaultVersion(workspaceRoot, relPath, { versionName });
+      syncWorkspace({ config });
+      break;
+    }
+
     case 'excluir-versao': {
       const versionName = getCliArg(argv, '--versao') || getCliArg(argv, '--nome');
       if (!versionName) throw new Error('Informe --versao <nome-da-variante>.');
@@ -194,7 +209,9 @@ function main() {
   if (jsonOut) {
     console.log(JSON.stringify(result, null, 2));
   } else {
-    console.log(`[roteiro-git] OK (${sub}) -> ${relPath} | rev=${result.revision?.id || '-'} | versão=${result.version?.name || result.version || '-'}`);
+    console.log(
+      `[roteiro-git] OK (${sub}) -> ${relPath} | rev=${result.revision?.id || '-'} | versão=${result.version?.name || result.version || result.defaultVersion || '-'}`
+    );
   }
 }
 

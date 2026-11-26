@@ -1,15 +1,28 @@
 import { MD, STATUS_VISUAL, STORAGE_KEY_PREFS } from '../core/constants.js';
-import { copyText, downloadTextFile, formatDatePt, formatNumber, loadJsonStorage, saveJsonStorage, showToast } from '../core/utils.js';
+import {
+  copyText,
+  downloadTextFile,
+  formatDatePt,
+  formatNumber,
+  formatVersionDescription,
+  formatVersionLabel,
+  loadJsonStorage,
+  saveJsonStorage,
+  showToast,
+} from '../core/utils.js';
 import {
   getActiveChannelData,
   getActiveDoc,
   getChannelSeriesList,
+  getDocDefaultVersion,
+  getStoredDefaultVersion,
   normalizePayload,
   persistDeleteDoc,
   persistSaveDoc,
   registerLifecycleHooks,
   registerViewRenderer,
   resolveRelativeMdPath,
+  setStoredDefaultVersion,
   state,
 } from '../core/state.js';
 import { renderCurrentView, setView, syncBrowserUrl, updateHeaderChrome } from '../core/router.js';
@@ -181,7 +194,10 @@ function startOrToggleBrowserSpeech(startIdx = null) {
   speakBlockAt(startIdx !== null ? Math.max(0, Math.min(startIdx, blocks.length - 1)) : 0);
 }
 
-export async function loadVersionHistory(docPath, { force = false, skipRender = false } = {}) {
+export async function loadVersionHistory(
+  docPath,
+  { force = false, skipRender = false, autoSelectDefault = true } = {}
+) {
   if (!state.serverMode || !docPath) return null;
   const chKey = state.activeChannel;
   const fetchKey = `${chKey}::${docPath}`;
@@ -191,15 +207,103 @@ export async function loadVersionHistory(docPath, { force = false, skipRender = 
   state.versionLoading = true;
   state.versionFetchedKey = fetchKey;
   state.versionError = null;
+  const preTargetVer = (state.activeVersion || 'principal').trim() || 'principal';
+  const wantPreContent =
+    preTargetVer !== 'principal' &&
+    state.loadedVersionKey !== `${chKey}::${docPath}::${preTargetVer}`;
+  if (wantPreContent) {
+    state.versionContentLoading = true;
+  }
+
   try {
-    const res = await fetch(
+    const historyReq = fetch(
       `/api/versions?channel=${encodeURIComponent(chKey)}&path=${encodeURIComponent(docPath)}`,
       { cache: 'no-store' }
-    );
-    const json = await res.json();
-    if (!res.ok) throw new Error(json.error || 'Erro ao carregar histórico do roteiro');
+    ).then(async (res) => ({ ok: res.ok, json: await res.json() }));
+
+    const contentReq = wantPreContent
+      ? fetch(
+          `/api/versions/content?channel=${encodeURIComponent(chKey)}&path=${encodeURIComponent(docPath)}&ref=${encodeURIComponent(`ver:${preTargetVer}`)}`,
+          { cache: 'no-store' }
+        )
+          .then(async (res) => ({ ok: res.ok, json: await res.json() }))
+          .catch(() => ({ ok: false, json: {} }))
+      : Promise.resolve(null);
+
+    const [histOut, preContentOut] = await Promise.all([historyReq, contentReq]);
+    const json = histOut.json;
+    if (!histOut.ok) throw new Error(json?.error || 'Erro ao carregar histórico do roteiro');
     if (state.activeChannel !== chKey || getActiveDoc()?.path !== docPath) return json;
+
     state.versionHistory = json;
+    const hasServerDefault = typeof json.defaultVersion === 'string' && json.defaultVersion.trim().length > 0;
+    const knownNames = (json.versions || []).map((v) => v.name);
+    let serverDefault = 'principal';
+    if (hasServerDefault) {
+      serverDefault = knownNames.includes(json.defaultVersion) ? json.defaultVersion : 'principal';
+      setStoredDefaultVersion(chKey, docPath, serverDefault);
+    } else {
+      const localDef = getStoredDefaultVersion(chKey, docPath);
+      serverDefault = localDef && knownNames.includes(localDef) ? localDef : 'principal';
+      state.versionHistory = {
+        ...json,
+        defaultVersion: serverDefault,
+        versions: (json.versions || []).map((v) => ({ ...v, isDefault: v.name === serverDefault })),
+      };
+    }
+
+    if (autoSelectDefault && !state.versionExplicit && state.activeVersion !== serverDefault) {
+      state.activeVersion = serverDefault;
+    }
+
+    const finalVer = (state.activeVersion || 'principal').trim() || 'principal';
+    const versionExists = (json.versions || []).some((v) => v.name === finalVer);
+    let resolvedVer = finalVer;
+    if (!versionExists) {
+      resolvedVer = serverDefault;
+      state.activeVersion = resolvedVer;
+      state.versionExplicit = false;
+      showToast(`Versão "${finalVer}" não encontrada; abrindo "${formatVersionLabel(resolvedVer)}".`);
+    }
+
+    const desiredKey = `${chKey}::${docPath}::${resolvedVer}`;
+    if (resolvedVer === 'principal') {
+      if (!state.hasUnsavedEdits) {
+        state.dirtyBody = null;
+        state.dirtyMeta = null;
+      }
+      state.loadedVersionKey = desiredKey;
+      state.versionContentLoading = false;
+    } else if (state.loadedVersionKey !== desiredKey) {
+      let verContentOut = resolvedVer === preTargetVer ? preContentOut : null;
+      if (!verContentOut) {
+        verContentOut = await fetch(
+          `/api/versions/content?channel=${encodeURIComponent(chKey)}&path=${encodeURIComponent(docPath)}&ref=${encodeURIComponent(`ver:${resolvedVer}`)}`,
+          { cache: 'no-store' }
+        )
+          .then(async (res) => ({ ok: res.ok, json: await res.json() }))
+          .catch(() => ({ ok: false, json: {} }));
+      }
+      if (state.activeChannel !== chKey || getActiveDoc()?.path !== docPath) return json;
+      if (verContentOut?.ok) {
+        const parsed = MD.parseFrontmatter(verContentOut.json?.content || '');
+        state.dirtyMeta = Object.keys(parsed.meta).length ? parsed.meta : null;
+        state.dirtyBody = parsed.body;
+        state.hasUnsavedEdits = false;
+        state.loadedVersionKey = desiredKey;
+      } else {
+        state.activeVersion = 'principal';
+        state.dirtyMeta = null;
+        state.dirtyBody = null;
+        state.loadedVersionKey = `${chKey}::${docPath}::principal`;
+      }
+      state.versionContentLoading = false;
+    } else {
+      state.versionContentLoading = false;
+    }
+
+    syncBrowserUrl({ replace: true });
+
     const revs = json.revisions || [];
     if (!state.diffFromRef || !state.diffToRef || state.diffDocPath !== docPath) {
       state.diffDocPath = docPath;
@@ -208,10 +312,10 @@ export async function loadVersionHistory(docPath, { force = false, skipRender = 
         state.diffToRef = `rev:${revs[0].id}`;
       } else if (revs.length === 1) {
         state.diffFromRef = `rev:${revs[0].id}`;
-        state.diffToRef = 'ver:principal';
+        state.diffToRef = `ver:${serverDefault}`;
       } else {
-        state.diffFromRef = 'ver:principal';
-        state.diffToRef = 'ver:principal';
+        state.diffFromRef = `ver:${serverDefault}`;
+        state.diffToRef = `ver:${serverDefault}`;
       }
     }
     if (state.docMode === 'history' && !state.diffResult && state.diffFromRef && state.diffToRef) {
@@ -219,6 +323,7 @@ export async function loadVersionHistory(docPath, { force = false, skipRender = 
     }
     return json;
   } catch (err) {
+    state.versionContentLoading = false;
     if (state.activeChannel === chKey && getActiveDoc()?.path === docPath) {
       state.versionError = err.message;
     }
@@ -231,23 +336,32 @@ export async function loadVersionHistory(docPath, { force = false, skipRender = 
   }
 }
 
-export async function switchDocVersion(docPath, versionName = 'principal') {
+export async function switchDocVersion(
+  docPath,
+  versionName = 'principal',
+  { silent = false, replaceUrl = false } = {}
+) {
   const cleanVer = (versionName || 'principal').trim() || 'principal';
   stopPrompter();
+  stopBrowserSpeech();
   state.selectedRevPreview = null;
   state.revPreviewContent = null;
   state.hasUnsavedEdits = false;
+  state.versionExplicit = true;
   if (cleanVer === 'principal') {
     state.activeVersion = 'principal';
     state.dirtyBody = null;
     state.dirtyMeta = null;
-    syncBrowserUrl({ replace: false });
+    state.versionContentLoading = false;
+    state.loadedVersionKey = `${state.activeChannel}::${docPath}::principal`;
+    syncBrowserUrl({ replace: replaceUrl });
     updateHeaderChrome();
     if (state.view === 'scripts') renderScriptsView(document.getElementById('viewContainer'));
+    if (!silent) showToast('Versão "Base" aberta');
     return;
   }
   if (!state.serverMode) {
-    showToast('Versões alternativas requerem o servidor local (./bin/crom-studio --tray).');
+    showToast('Múltiplas versões requerem o servidor local (./bin/crom-studio --tray).');
     return;
   }
   try {
@@ -262,10 +376,75 @@ export async function switchDocVersion(docPath, versionName = 'principal') {
     state.dirtyMeta = Object.keys(parsed.meta).length ? parsed.meta : null;
     state.dirtyBody = parsed.body;
     state.hasUnsavedEdits = false;
-    syncBrowserUrl({ replace: false });
+    state.versionContentLoading = false;
+    state.loadedVersionKey = `${state.activeChannel}::${docPath}::${cleanVer}`;
+    syncBrowserUrl({ replace: replaceUrl });
     updateHeaderChrome();
     if (state.view === 'scripts') renderScriptsView(document.getElementById('viewContainer'));
-    showToast(`Editando versão "${cleanVer}"`);
+    if (!silent) showToast(`Versão "${formatVersionLabel(cleanVer)}" aberta`);
+  } catch (err) {
+    state.versionContentLoading = false;
+    showToast(err.message);
+  }
+}
+
+export async function setDefaultDocVersion(docPath, versionName = 'principal') {
+  if (!docPath) return;
+  const cleanVer = (versionName || 'principal').trim() || 'principal';
+  const chKey = state.activeChannel;
+  if (!state.serverMode) {
+    setStoredDefaultVersion(chKey, docPath, cleanVer);
+    if (state.versionHistory) {
+      state.versionHistory.defaultVersion = cleanVer;
+      state.versionHistory.versions = (state.versionHistory.versions || []).map((v) => ({
+        ...v,
+        isDefault: v.name === cleanVer,
+      }));
+    }
+    syncBrowserUrl({ replace: true });
+    if (state.view === 'scripts') renderScriptsView(document.getElementById('viewContainer'));
+    showToast(`★ "${formatVersionLabel(cleanVer)}" agora abre primeiro neste roteiro!`);
+    return;
+  }
+  try {
+    const res = await fetch('/api/versions/default', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channel: chKey,
+        path: docPath,
+        versionName: cleanVer,
+      }),
+    });
+    if (res.status === 405) {
+      setStoredDefaultVersion(chKey, docPath, cleanVer);
+      if (state.versionHistory) {
+        state.versionHistory = {
+          ...state.versionHistory,
+          defaultVersion: cleanVer,
+          versions: (state.versionHistory.versions || []).map((v) => ({
+            ...v,
+            isDefault: v.name === cleanVer,
+          })),
+        };
+      }
+      syncBrowserUrl({ replace: true });
+      updateHeaderChrome();
+      if (state.view === 'scripts') renderScriptsView(document.getElementById('viewContainer'));
+      showToast(`★ "${formatVersionLabel(cleanVer)}" salva localmente para abrir primeiro!`);
+      return;
+    }
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Erro ao definir versão inicial');
+    if (json.state) state.data = normalizePayload(json.state);
+    if (json.history) state.versionHistory = json.history;
+    state.versionFetchedKey = `${chKey}::${docPath}`;
+    const resolvedDef = json.defaultVersion || cleanVer;
+    setStoredDefaultVersion(chKey, docPath, resolvedDef);
+    syncBrowserUrl({ replace: true });
+    updateHeaderChrome();
+    if (state.view === 'scripts') renderScriptsView(document.getElementById('viewContainer'));
+    showToast(`★ "${formatVersionLabel(resolvedDef)}" agora abre primeiro neste roteiro!`);
   } catch (err) {
     showToast(err.message);
   }
@@ -316,7 +495,7 @@ export async function loadRevisionPreview(docPath, revId) {
 
 export async function restoreDocRevision(docPath, revId, targetVersion = 'principal') {
   if (!state.serverMode || !docPath || !revId || revId === 'disk') return;
-  const labelTarget = targetVersion === 'principal' ? 'arquivo principal' : `versão "${targetVersion}"`;
+  const labelTarget = `versão "${formatVersionLabel(targetVersion)}"`;
   if (!confirm(`Restaurar o snapshot ${revId} para ${labelTarget}? (O histórico atual não será perdido; uma nova revisão de restauração será gravada.)`)) {
     return;
   }
@@ -337,6 +516,8 @@ export async function restoreDocRevision(docPath, revId, targetVersion = 'princi
     state.data = normalizePayload(json.state);
     state.versionHistory = json.history;
     state.activeVersion = json.version || targetVersion;
+    state.loadedVersionKey = `${state.activeChannel}::${docPath}::${state.activeVersion}`;
+    state.versionContentLoading = false;
     state.hasUnsavedEdits = false;
     if (state.activeVersion === 'principal') {
       state.dirtyBody = null;
@@ -360,7 +541,7 @@ export async function restoreDocRevision(docPath, revId, targetVersion = 'princi
 
 export async function promoteDocVersion(docPath, versionName) {
   if (!state.serverMode || !docPath || !versionName || versionName === 'principal') return;
-  if (!confirm(`Promover a versão "${versionName}" para substituir o .md principal em disco? (Será gravado um commit de promoção no histórico.)`)) {
+  if (!confirm(`Aplicar o conteúdo da versão "${versionName}" no arquivo .md Base em disco? (Será gravado um commit no histórico.)`)) {
     return;
   }
   try {
@@ -375,10 +556,13 @@ export async function promoteDocVersion(docPath, versionName) {
       }),
     });
     const json = await res.json();
-    if (!res.ok) throw new Error(json.error || 'Erro ao promover versão');
+    if (!res.ok) throw new Error(json.error || 'Erro ao aplicar versão na Base');
     state.data = normalizePayload(json.state);
     state.versionHistory = json.history;
     state.activeVersion = 'principal';
+    state.versionExplicit = true;
+    state.loadedVersionKey = `${state.activeChannel}::${docPath}::principal`;
+    state.versionContentLoading = false;
     state.dirtyBody = null;
     state.dirtyMeta = null;
     state.hasUnsavedEdits = false;
@@ -386,7 +570,7 @@ export async function promoteDocVersion(docPath, versionName) {
     syncBrowserUrl({ replace: false });
     updateHeaderChrome();
     renderCurrentView();
-    showToast(`Versão "${versionName}" promovida para principal!`);
+    showToast(`Conteúdo de "${versionName}" aplicado na versão Base!`);
   } catch (err) {
     showToast(err.message);
   }
@@ -394,7 +578,7 @@ export async function promoteDocVersion(docPath, versionName) {
 
 export async function deleteDocVersion(docPath, versionName) {
   if (!state.serverMode || !docPath || !versionName || versionName === 'principal') return;
-  if (!confirm(`Excluir a versão alternativa "${versionName}"? (Os commits já salvos continuam na linha do tempo.)`)) {
+  if (!confirm(`Excluir a versão "${versionName}"? (Os commits já salvos continuam na linha do tempo.)`)) {
     return;
   }
   try {
@@ -406,11 +590,18 @@ export async function deleteDocVersion(docPath, versionName) {
     if (!res.ok) throw new Error(json.error || 'Erro ao excluir versão');
     state.data = normalizePayload(json.state);
     state.versionHistory = json.history;
+    const nextDefault = json.history?.defaultVersion || json.defaultVersion || 'principal';
+    setStoredDefaultVersion(state.activeChannel, docPath, nextDefault);
     if (state.activeVersion === versionName) {
-      state.activeVersion = 'principal';
+      state.activeVersion = nextDefault;
+      state.versionExplicit = false;
       state.dirtyBody = null;
       state.dirtyMeta = null;
       state.hasUnsavedEdits = false;
+      state.loadedVersionKey = nextDefault === 'principal' ? `${state.activeChannel}::${docPath}::principal` : '';
+      if (nextDefault !== 'principal') {
+        await switchDocVersion(docPath, nextDefault, { silent: true, replaceUrl: true });
+      }
     }
     syncBrowserUrl({ replace: true });
     updateHeaderChrome();
@@ -509,7 +700,7 @@ function renderHistoryDiffTab(activeDoc) {
         <div class="glass-card" style="max-width:600px; margin:24px auto;">
           <h3 class="gc-title">Histórico Git & Diff de Roteiros</h3>
           <p class="gc-desc">
-            O histórico de revisões, comparação linha a linha e versões alternativas estão disponíveis quando o painel roda com o servidor local:
+            O histórico de revisões, comparação linha a linha e múltiplas versões estão disponíveis quando o painel roda com o servidor local:
             <code>./bin/crom-studio --tray</code> (ou <code>npm start</code>).
           </p>
         </div>
@@ -535,19 +726,23 @@ function renderHistoryDiffTab(activeDoc) {
     `;
   }
 
-  const history = state.versionHistory || { versions: [], revisions: [] };
+  const history = state.versionHistory || { versions: [], revisions: [], defaultVersion: 'principal' };
   const versions = history.versions || [];
   const revisions = history.revisions || [];
+  const defaultVersion = history.defaultVersion || getDocDefaultVersion(state.activeChannel, activeDoc.path);
 
   const buildRefOptions = (selectedVal) => {
     const verOpts = versions.map((v) => {
       const val = `ver:${v.name}`;
-      return `<option value="${MD.escapeHtml(val)}"${selectedVal === val ? ' selected' : ''}>Versão: ${MD.escapeHtml(v.name)}${v.headRev ? ` (${MD.escapeHtml(v.headRev)})` : ''}</option>`;
+      const lbl = formatVersionLabel(v.name);
+      const star = v.name === defaultVersion ? ' ★' : '';
+      return `<option value="${MD.escapeHtml(val)}"${selectedVal === val ? ' selected' : ''}>Versão: ${MD.escapeHtml(lbl)}${star}${v.headRev ? ` (${MD.escapeHtml(v.headRev)})` : ''}</option>`;
     });
     const revOpts = revisions.map((r) => {
       const val = r.id === 'disk' ? 'disk' : `rev:${r.id}`;
       const isSelected = selectedVal === val || (r.id === 'disk' && selectedVal === 'rev:disk');
-      return `<option value="${MD.escapeHtml(val)}"${isSelected ? ' selected' : ''}>${MD.escapeHtml(r.id)} (${MD.escapeHtml(r.version || 'principal')}) — ${MD.escapeHtml(String(r.message || '').slice(0, 42))}</option>`;
+      const revVerLabel = formatVersionLabel(r.version);
+      return `<option value="${MD.escapeHtml(val)}"${isSelected ? ' selected' : ''}>${MD.escapeHtml(r.id)} (${MD.escapeHtml(revVerLabel)}) — ${MD.escapeHtml(String(r.message || '').slice(0, 42))}</option>`;
     });
     return [...verOpts, ...revOpts].join('');
   };
@@ -557,12 +752,13 @@ function renderHistoryDiffTab(activeDoc) {
         .map((rev) => {
           const isSelected = state.selectedRevPreview === rev.id;
           const dateStr = formatDatePt(String(rev.createdAt || '').slice(0, 10));
+          const revVerLabel = formatVersionLabel(rev.version);
           return `
             <div class="git-rev-card${isSelected ? ' is-selected' : ''}">
               <div class="git-rev-top">
                 <span style="font-weight:700; color:var(--text-1);">${MD.escapeHtml(rev.id)}</span>
                 <span class="git-kind-badge kind-${MD.escapeHtml(rev.kind || 'commit')}">${MD.escapeHtml(rev.kind || 'commit')}</span>
-                <span style="color:var(--accent);">${MD.escapeHtml(rev.version || 'principal')}</span>
+                <span style="color:var(--accent);">${MD.escapeHtml(revVerLabel)}</span>
               </div>
               <div style="font-size:12px; font-weight:600; color:var(--text-1); line-height:1.35;">${MD.escapeHtml(rev.message || '')}</div>
               <div style="font-size:11px; color:var(--text-3); display:flex; justify-content:space-between; gap:6px; flex-wrap:wrap;">
@@ -830,6 +1026,7 @@ export async function saveCurrentDoc() {
       state.dirtyBody = body;
     }
     state.versionFetchedKey = `${state.activeChannel}::${finalPath}`;
+    state.loadedVersionKey = `${state.activeChannel}::${finalPath}::${activeVersion}`;
     state.diffResult = null;
     updateHeaderChrome();
     renderCurrentView();
@@ -837,7 +1034,7 @@ export async function saveCurrentDoc() {
       state.serverMode
         ? activeVersion === 'principal'
           ? `Salvo em ${finalPath}!`
-          : `Versão "${activeVersion}" salva no histórico de ${finalPath}!`
+          : `Versão "${formatVersionLabel(activeVersion)}" salva no histórico de ${finalPath}!`
         : `Salvo no rascunho local (${finalPath}). Use "Baixar .md" ou inicie o servidor.`
     );
   } catch (err) {
@@ -925,6 +1122,10 @@ function renderScriptsListCardsHtml(chData, allDocs, filtered, ch) {
       const vis = STATUS_VISUAL[st] || STATUS_VISUAL.ideia;
       const ecoCount = countScriptEcosystemLinks(chData, d.path);
       const revBadge = d.versioning?.headRev ? `Git ${d.versioning.headRev}` : '';
+      const hasMultiVersions = Number(d.versioning?.versionsCount || 1) > 1;
+      const defaultVerBadge = hasMultiVersions
+        ? `★ ${formatVersionLabel(d.versioning?.defaultVersion || 'principal')}`
+        : '';
       const ctxUrl = `/${ch}/roteiros/${d.path}`;
       const words = Number(d.stats?.words || 0);
       return `
@@ -938,6 +1139,7 @@ function renderScriptsListCardsHtml(chData, allDocs, filtered, ch) {
               <span class="wb-board-file">${MD.escapeHtml(d.path)}</span>
               ${d.meta.serie ? `<span class="tag-pill">${MD.escapeHtml(d.meta.serie)}</span>` : ''}
               ${revBadge ? `<span class="tag-pill">${MD.escapeHtml(revBadge)}</span>` : ''}
+              ${defaultVerBadge ? `<span class="tag-pill ver-card-default-pill" title="Versão configurada para abrir primeiro (${d.versioning.versionsCount} versões)">${MD.escapeHtml(defaultVerBadge)}</span>` : ''}
             </div>
             ${d.meta.resumo ? `<p class="script-card-summary">${MD.escapeHtml(d.meta.resumo)}</p>` : ''}
             <div class="wb-board-meta">
@@ -1161,7 +1363,13 @@ export function renderScriptsView(container) {
 
   if (activeDoc) {
     let bodySectionHtml = '';
-    if (state.docMode === 'read') {
+    if (state.versionContentLoading && state.docMode !== 'history') {
+      bodySectionHtml = `
+        <div class="doc-body-scroll">
+          <p style="color:var(--text-3); padding:24px;">Carregando versão "${MD.escapeHtml(formatVersionLabel(state.activeVersion))}"...</p>
+        </div>
+      `;
+    } else if (state.docMode === 'read') {
       bodySectionHtml = `
         <div class="doc-body-scroll" id="readerScroll">
           <article class="md-article" id="mdArticle" style="font-size:${state.readerFontSize}px;">
@@ -1229,27 +1437,56 @@ export function renderScriptsView(container) {
       `;
     }
 
-    const versions = state.versionHistory?.versions || [
-      { name: 'principal', description: 'Arquivo .md principal no workspace', isPrimary: true, headRev: activeDoc.versioning?.headRev || null },
-    ];
-    const activeVerObj = versions.find((v) => v.name === state.activeVersion);
-    const variantBannerHtml =
-      state.activeVersion !== 'principal'
-        ? `
-          <div class="variant-banner">
-            <div>
-              <span>⎇ Versão alternativa ativa: <strong>${MD.escapeHtml(state.activeVersion)}</strong></span>
-              ${activeVerObj?.description ? `<span style="color:var(--text-2); margin-left:6px;">— ${MD.escapeHtml(activeVerObj.description)}</span>` : ''}
-            </div>
-            <div style="display:flex; gap:6px; flex-wrap:wrap;">
-              <button type="button" class="btn-sm" id="varSwitchPrincipalBtn">← Principal</button>
-              <button type="button" class="btn-sm" id="varCompareBtn">Comparar com principal</button>
-              <button type="button" class="btn-sm btn-accent" id="varPromoteBtn">Promover para principal</button>
-              <button type="button" class="btn-sm btn-danger" id="varDeleteBtn">Excluir versão</button>
-            </div>
+    const defaultVersion = getDocDefaultVersion(state.activeChannel, activeDoc.path);
+    const fallbackVerNames = Array.isArray(activeDoc.versioning?.versions) && activeDoc.versioning.versions.length
+      ? activeDoc.versioning.versions
+      : ['principal'];
+    const versions = state.versionHistory?.versions || fallbackVerNames.map((name) => ({
+      name,
+      description: name === 'principal' ? 'Arquivo .md base no workspace' : '',
+      isPrimary: name === 'principal',
+      isDefault: name === defaultVersion,
+      headRev: name === 'principal' ? activeDoc.versioning?.headRev || null : null,
+    }));
+    const activeVerName = state.activeVersion || 'principal';
+    const isActiveDefault = activeVerName === defaultVersion;
+    const hasMultipleVersions = versions.length > 1;
+    const versionBarHtml = hasMultipleVersions
+      ? `
+        <div class="version-bar">
+          <div class="version-bar-pills" role="tablist" aria-label="Versões do roteiro">
+            ${versions
+              .map((v) => {
+                const isAct = v.name === activeVerName;
+                const isDef = v.name === defaultVersion;
+                const label = formatVersionLabel(v.name);
+                const desc = formatVersionDescription(v);
+                return `
+                  <button type="button" class="ver-bar-pill${isAct ? ' is-active' : ''}${isDef ? ' is-default' : ''}" data-switch-version="${MD.escapeHtml(v.name)}" role="tab" aria-selected="${isAct ? 'true' : 'false'}" title="${MD.escapeHtml(desc || label)}${isDef ? ' • Abre primeiro' : ''}">
+                    <span class="ver-chip-dot"></span>
+                    <span>${MD.escapeHtml(label)}</span>
+                    ${isDef ? '<span class="ver-star-tag" title="Abre primeiro">★</span>' : ''}
+                  </button>
+                `;
+              })
+              .join('')}
           </div>
-        `
-        : '';
+          <div class="version-bar-actions">
+            ${isActiveDefault
+              ? '<span class="ver-default-badge" title="Esta versão abre automaticamente ao abrir este roteiro">★ Abre primeiro</span>'
+              : `<button type="button" class="btn-sm ver-set-default-btn" id="varSetDefaultBtn" data-set-default-version="${MD.escapeHtml(activeVerName)}" title="Definir esta versão para abrir primeiro automaticamente">★ Abrir primeiro</button>`
+            }
+            <button type="button" class="btn-sm" id="varCompareBtn">Comparar</button>
+            ${activeVerName !== 'principal'
+              ? `
+                <button type="button" class="btn-sm" id="varPromoteBtn" title="Copiar o conteúdo desta versão para o arquivo .md Base em disco">Aplicar na Base</button>
+                <button type="button" class="btn-sm btn-danger" id="varDeleteBtn">Excluir</button>
+              `
+              : ''}
+          </div>
+        </div>
+      `
+      : '';
 
     workspaceHtml = `
       <div class="doc-toolbar-clean">
@@ -1283,22 +1520,32 @@ export function renderScriptsView(container) {
           <button type="button" class="icon-btn-sm${!state.inspectorCollapsed ? ' is-active' : ''}" id="toggleInspectorBtn" title="Mostrar/ocultar inspetor direito">◨</button>
         </div>
       </div>
-      ${variantBannerHtml}
+      ${versionBarHtml}
       ${bodySectionHtml}
     `;
 
     const isProtected = activeDoc.path === 'AGENTS.md' || activeDoc.path === 'README.md';
     const recentRevs = (state.versionHistory?.revisions || []).slice(0, 3);
-    const versionChipsHtml = versions
-      .map(
-        (v) => `
-          <button type="button" class="ver-chip${v.name === state.activeVersion ? ' is-active' : ''}" data-switch-version="${MD.escapeHtml(v.name)}" title="${MD.escapeHtml(v.description || v.name)}">
-            <span class="ver-chip-dot"></span>
-            <span>${MD.escapeHtml(v.name)}</span>
-            ${v.headRev ? `<small style="opacity:0.7; font-family:var(--font-mono);">${MD.escapeHtml(v.headRev)}</small>` : ''}
-          </button>
-        `
-      )
+    const versionRowsHtml = versions
+      .map((v) => {
+        const isAct = v.name === activeVerName;
+        const isDef = v.name === defaultVersion;
+        const label = formatVersionLabel(v.name);
+        const desc = formatVersionDescription(v);
+        return `
+          <div class="ver-row-item${isAct ? ' is-active' : ''}${isDef ? ' is-default' : ''}">
+            <button type="button" class="ver-row-main" data-switch-version="${MD.escapeHtml(v.name)}" title="${MD.escapeHtml(desc || label)}">
+              <span class="ver-chip-dot"></span>
+              <span class="ver-row-name">${MD.escapeHtml(label)}</span>
+              ${v.headRev ? `<small class="ver-row-rev">${MD.escapeHtml(v.headRev)}</small>` : ''}
+            </button>
+            ${isDef
+              ? '<span class="ver-default-pill" title="Abre primeiro ao abrir este roteiro">★ Abre primeiro</span>'
+              : `<button type="button" class="ver-make-default-btn" data-set-default-version="${MD.escapeHtml(v.name)}" title="Definir ${MD.escapeHtml(label)} para abrir primeiro">☆ Abrir primeiro</button>`
+            }
+          </div>
+        `;
+      })
       .join('');
 
     const recentCommitsHtml = state.serverMode
@@ -1309,7 +1556,7 @@ export function renderScriptsView(container) {
                 <button type="button" class="insp-rev-row" data-insp-rev="${MD.escapeHtml(r.id)}">
                   <div style="display:flex; justify-content:space-between; gap:6px; font-family:var(--font-mono); font-size:10.5px;">
                     <strong>${MD.escapeHtml(r.id)}</strong>
-                    <span style="color:var(--accent);">${MD.escapeHtml(r.version || 'principal')}</span>
+                    <span style="color:var(--accent);">${MD.escapeHtml(formatVersionLabel(r.version))}</span>
                     <span style="color:var(--text-3);">${formatDatePt(String(r.createdAt || '').slice(0, 10))}</span>
                   </div>
                   <div style="color:var(--text-2); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${MD.escapeHtml(r.message || '')}</div>
@@ -1361,7 +1608,7 @@ export function renderScriptsView(container) {
                       <div class="insp-eco-nar-card">
                         <div style="display:flex; justify-content:space-between; gap:6px; align-items:center;">
                           <span class="insp-eco-item-title">${MD.escapeHtml(nar.title || nar.id)}</span>
-                          <span class="insp-eco-item-meta">${MD.escapeHtml(nar.docVersion || 'principal')}</span>
+                          <span class="insp-eco-item-meta">${MD.escapeHtml(formatVersionLabel(nar.docVersion))}</span>
                         </div>
                         <audio controls preload="none" src="/api/tts/media?channel=${encodeURIComponent(chData.key)}&path=${encodeURIComponent(nar.relPath)}" style="width:100%; height:28px; margin-top:4px;"></audio>
                       </div>
@@ -1515,15 +1762,20 @@ export function renderScriptsView(container) {
 
       <div class="insp-section">
         <div class="insp-title-row">
-          <span class="insp-title">Versões Alternativas</span>
+          <span class="insp-title">Versões do Roteiro</span>
           <button type="button" class="kc-move-btn" id="inspNewVersionBtn">+ Nova Versão</button>
         </div>
-        <div class="version-chip-list">${versionChipsHtml}</div>
-        ${state.activeVersion !== 'principal'
+        <div class="version-list-insp">${versionRowsHtml}</div>
+        ${hasMultipleVersions
           ? `
             <div class="insp-actions-stack" style="margin-top:8px;">
-              <button type="button" class="btn-sm" id="inspCompareVarBtn">Comparar</button>
-              <button type="button" class="btn-sm btn-accent" id="inspPromoteVarBtn">Promover</button>
+              ${!isActiveDefault
+                ? `<button type="button" class="btn-sm ver-set-default-btn" id="inspSetDefaultVerBtn" data-set-default-version="${MD.escapeHtml(activeVerName)}" style="grid-column: 1 / -1;">★ Definir como inicial</button>`
+                : ''}
+              <button type="button" class="btn-sm" id="inspCompareVarBtn"${activeVerName === 'principal' ? ' style="grid-column: 1 / -1;"' : ''}>Comparar</button>
+              ${activeVerName !== 'principal'
+                ? '<button type="button" class="btn-sm btn-accent" id="inspPromoteVarBtn" title="Copiar o conteúdo desta versão para o arquivo .md Base em disco">Aplicar na Base</button>'
+                : ''}
             </div>
           `
           : ''}
@@ -1634,8 +1886,14 @@ export function renderScriptsView(container) {
         return;
       }
       stopPrompter();
-      state.selectedDocPath = btn.dataset.selectDoc;
-      state.activeVersion = 'principal';
+      stopBrowserSpeech();
+      const nextDocPath = btn.dataset.selectDoc;
+      const nextInitialVer = getDocDefaultVersion(state.activeChannel, nextDocPath);
+      state.selectedDocPath = nextDocPath;
+      state.activeVersion = nextInitialVer;
+      state.versionExplicit = false;
+      state.versionContentLoading = Boolean(state.serverMode && nextInitialVer !== 'principal');
+      state.loadedVersionKey = '';
       state.versionHistory = null;
       state.versionFetchedKey = '';
       state.diffDocPath = '';
@@ -1816,8 +2074,14 @@ export function renderScriptsView(container) {
         const resolved = resolveRelativeMdPath(activeDoc.folder, link.dataset.relMd);
         const found = docs.find((d) => d.path === resolved);
         if (found) {
+          stopPrompter();
+          stopBrowserSpeech();
+          const nextInitialVer = getDocDefaultVersion(state.activeChannel, found.path);
           state.selectedDocPath = found.path;
-          state.activeVersion = 'principal';
+          state.activeVersion = nextInitialVer;
+          state.versionExplicit = false;
+          state.versionContentLoading = Boolean(state.serverMode && nextInitialVer !== 'principal');
+          state.loadedVersionKey = '';
           state.versionHistory = null;
           state.versionFetchedKey = '';
           state.diffDocPath = '';
@@ -2006,6 +2270,14 @@ export function renderScriptsView(container) {
     };
   });
 
+  container.querySelectorAll('[data-set-default-version]').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const verName = btn.dataset.setDefaultVersion || state.activeVersion || 'principal';
+      setDefaultDocVersion(activeDoc.path, verName);
+    };
+  });
+
   const goCompareVariant = () => {
     if (!state.serverMode) {
       showToast('Comparação de versões requer o servidor local.');
@@ -2014,16 +2286,20 @@ export function renderScriptsView(container) {
     stopPrompter();
     state.docMode = 'history';
     syncBrowserUrl({ replace: true });
-    loadDiffForDoc(activeDoc.path, 'ver:principal', `ver:${state.activeVersion}`);
+    const allVers = state.versionHistory?.versions || [];
+    const curVer = state.activeVersion || 'principal';
+    if (curVer !== 'principal') {
+      loadDiffForDoc(activeDoc.path, 'ver:principal', `ver:${curVer}`);
+    } else {
+      const defVer = getDocDefaultVersion(state.activeChannel, activeDoc.path);
+      const otherVer =
+        (defVer !== 'principal' ? defVer : null) ||
+        allVers.find((v) => v.name !== 'principal')?.name ||
+        'principal';
+      loadDiffForDoc(activeDoc.path, 'ver:principal', `ver:${otherVer}`);
+    }
   };
 
-  const varSwitchBtn = document.getElementById('varSwitchPrincipalBtn');
-  if (varSwitchBtn) {
-    varSwitchBtn.onclick = () => {
-      if (state.hasUnsavedEdits && !confirm('Descartar alterações não salvas e voltar para a versão principal?')) return;
-      switchDocVersion(activeDoc.path, 'principal');
-    };
-  }
   const varCmpBtn = document.getElementById('varCompareBtn');
   if (varCmpBtn) varCmpBtn.onclick = goCompareVariant;
   const inspCmpBtn = document.getElementById('inspCompareVarBtn');

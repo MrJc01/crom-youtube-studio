@@ -95,6 +95,16 @@ function normalizeVersionName(name, { allowPrincipal = true } = {}) {
   return slug;
 }
 
+function displayVersionLabel(versionName) {
+  return !versionName || versionName === 'principal' ? 'Base' : versionName;
+}
+
+function resolveDefaultVersion(index) {
+  const candidate = String(index?.defaultVersion || '').trim();
+  if (candidate && index?.versions?.[candidate]) return candidate;
+  return 'principal';
+}
+
 function formatRevId(num) {
   return `r${String(num).padStart(3, '0')}`;
 }
@@ -323,11 +333,12 @@ export function ensureSyncedBaseline(workspaceRoot, relPath, { author = 'Sistema
       docPath: norm,
       docKey,
       activeVersion: 'principal',
+      defaultVersion: 'principal',
       nextRev: 1,
       versions: {
         principal: {
           name: 'principal',
-          description: 'Arquivo .md principal no workspace',
+          description: 'Arquivo .md base no workspace',
           baseVersion: null,
           baseRev: null,
           createdAt: now,
@@ -365,7 +376,7 @@ export function ensureSyncedBaseline(workspaceRoot, relPath, { author = 'Sistema
       if (!primaryMeta) {
         index.versions.principal = {
           name: 'principal',
-          description: 'Arquivo .md principal no workspace',
+          description: 'Arquivo .md base no workspace',
           baseVersion: null,
           baseRev: null,
           createdAt: now,
@@ -404,6 +415,7 @@ export function getVersioningSummary(workspaceRoot, relPath) {
         totalRevisions: 0,
         versionsCount: 1,
         versions: ['principal'],
+        defaultVersion: 'principal',
         headRev: null,
         lastCommitMessage: '',
         lastCommitAt: '',
@@ -416,6 +428,7 @@ export function getVersioningSummary(workspaceRoot, relPath) {
       totalRevisions: index.revisions.length,
       versionsCount: versions.length,
       versions,
+      defaultVersion: resolveDefaultVersion(index),
       headRev: index.versions.principal?.headRev || lastRev?.id || null,
       lastCommitMessage: lastRev?.message || '',
       lastCommitAt: lastRev?.createdAt || '',
@@ -426,6 +439,7 @@ export function getVersioningSummary(workspaceRoot, relPath) {
       totalRevisions: 0,
       versionsCount: 1,
       versions: ['principal'],
+      defaultVersion: 'principal',
       headRev: null,
       lastCommitMessage: '',
       lastCommitAt: '',
@@ -449,10 +463,11 @@ export function getHistory(workspaceRoot, relPath) {
       docPath: norm,
       docKey,
       initialized: false,
+      defaultVersion: 'principal',
       versions: [
         {
           name: 'principal',
-          description: 'Arquivo .md principal no workspace',
+          description: 'Arquivo .md base no workspace',
           baseVersion: null,
           baseRev: null,
           createdAt: now,
@@ -460,6 +475,7 @@ export function getHistory(workspaceRoot, relPath) {
           headRev: 'disk',
           hash: sha256(diskContent),
           isPrimary: true,
+          isDefault: true,
           words: countWords(diskContent),
         },
       ],
@@ -482,6 +498,7 @@ export function getHistory(workspaceRoot, relPath) {
   }
 
   const diskHash = sha256(diskContent);
+  const defaultVersion = resolveDefaultVersion(index);
   const outVersions = Object.values(index.versions || {}).map((v) => {
     let words = 0;
     try {
@@ -492,6 +509,7 @@ export function getHistory(workspaceRoot, relPath) {
     }
     return {
       ...v,
+      isDefault: v.name === defaultVersion,
       dirtyExternal: Boolean(v.isPrimary && v.hash && v.hash !== diskHash),
       words,
     };
@@ -501,6 +519,7 @@ export function getHistory(workspaceRoot, relPath) {
     docPath: index.docPath || norm,
     docKey,
     initialized: true,
+    defaultVersion,
     versions: outVersions,
     revisions: [...(index.revisions || [])].reverse(),
   };
@@ -620,7 +639,7 @@ export function commitRevision(workspaceRoot, relPath, { content, version = 'pri
   const { record } = appendRevisionRecord(index, docDir, {
     version: safeVer,
     kind,
-    message: message || `Atualização na versão ${safeVer}`,
+    message: message || `Atualização na versão ${displayVersionLabel(safeVer)}`,
     author,
     content: normContent,
     parentRev: verMeta.headRev || null,
@@ -677,7 +696,7 @@ export function createVersion(
   const { record } = appendRevisionRecord(index, docDir, {
     version: safeName,
     kind: 'branch',
-    message: message || `Nova versão "${safeName}" criada a partir de ${fromRev || baseVerName}`,
+    message: message || `Nova versão "${safeName}" criada a partir de ${fromRev || displayVersionLabel(baseVerName)}`,
     author,
     content: initialContent,
     parentRev: baseRevId,
@@ -721,7 +740,7 @@ export function restoreRevision(
   const { record } = appendRevisionRecord(index, docDir, {
     version: safeVer,
     kind: 'restore',
-    message: message || `Restaurado de ${revId} para "${safeVer}"`,
+    message: message || `Restaurado de ${revId} para "${displayVersionLabel(safeVer)}"`,
     author,
     content: snapshotContent,
     parentRev: targetMeta.headRev || null,
@@ -758,7 +777,7 @@ export function promoteVersion(workspaceRoot, relPath, { versionName, author = '
   const { record } = appendRevisionRecord(index, docDir, {
     version: 'principal',
     kind: 'promote',
-    message: message || `Promovida a versão "${safeVer}" para principal`,
+    message: message || `Aplicada a versão "${safeVer}" na Base`,
     author,
     content: variantContent,
     parentRev: primaryMeta?.headRev || null,
@@ -776,6 +795,40 @@ export function promoteVersion(workspaceRoot, relPath, { versionName, author = '
   };
 }
 
+/**
+ * Define qual versão abre primeiro por padrão ao abrir o roteiro sem ?versao= na URL.
+ */
+export function setDefaultVersion(workspaceRoot, relPath, { versionName = 'principal' } = {}) {
+  const safeVer = normalizeVersionName(versionName, { allowPrincipal: true });
+  const { norm, abs } = getMainMdAbs(workspaceRoot, relPath);
+  if (!fs.existsSync(abs)) {
+    throw Object.assign(new Error(`Arquivo não encontrado: ${norm}`), { statusCode: 404 });
+  }
+  const { docDir } = getDocGitDir(workspaceRoot, relPath);
+  const existing = readIndex(docDir);
+  if (!existing) {
+    if (safeVer === 'principal') {
+      return {
+        ok: true,
+        defaultVersion: 'principal',
+        history: getHistory(workspaceRoot, relPath),
+      };
+    }
+    throw Object.assign(new Error(`Versão "${safeVer}" não encontrada`), { statusCode: 404 });
+  }
+  if (!existing.versions?.[safeVer]) {
+    throw Object.assign(new Error(`Versão "${safeVer}" não encontrada`), { statusCode: 404 });
+  }
+  existing.defaultVersion = safeVer;
+  existing.activeVersion = safeVer;
+  writeIndex(docDir, existing);
+  return {
+    ok: true,
+    defaultVersion: safeVer,
+    history: getHistory(workspaceRoot, relPath),
+  };
+}
+
 export function deleteVersion(workspaceRoot, relPath, { versionName }) {
   const safeVer = normalizeVersionName(versionName, { allowPrincipal: false });
   const { docDir } = getDocGitDir(workspaceRoot, relPath);
@@ -784,12 +837,19 @@ export function deleteVersion(workspaceRoot, relPath, { versionName }) {
     throw Object.assign(new Error(`Versão "${safeVer}" não encontrada`), { statusCode: 404 });
   }
   delete index.versions[safeVer];
+  if (index.defaultVersion === safeVer) {
+    index.defaultVersion = 'principal';
+  }
+  if (index.activeVersion === safeVer) {
+    index.activeVersion = 'principal';
+  }
   const verFile = path.join(docDir, 'versoes', `${safeVer}.md`);
   if (fs.existsSync(verFile)) fs.unlinkSync(verFile);
   writeIndex(docDir, index);
   return {
     ok: true,
     deletedVersion: safeVer,
+    defaultVersion: resolveDefaultVersion(index),
     history: getHistory(workspaceRoot, relPath),
   };
 }

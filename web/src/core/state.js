@@ -1,4 +1,4 @@
-import { MD, SERIE_META, STORAGE_KEY_DRAFTS } from './constants.js';
+import { MD, SERIE_META, STORAGE_KEY_DEFAULT_VERSIONS, STORAGE_KEY_DRAFTS } from './constants.js';
 import { loadJsonStorage, saveJsonStorage, showToast } from './utils.js';
 
 export const state = {
@@ -14,6 +14,9 @@ export const state = {
   hasUnsavedEdits: false,
   liveConnected: false,
   activeVersion: 'principal',
+  versionExplicit: false,
+  versionContentLoading: false,
+  loadedVersionKey: '',
   versionHistory: null,
   versionLoading: false,
   versionError: null,
@@ -398,6 +401,48 @@ export function getActiveDoc() {
   const docs = getActiveChannelData().docs || [];
   if (!docs.length) return null;
   return docs.find((d) => d.path === state.selectedDocPath) || null;
+}
+
+export function getStoredDefaultVersion(channelKey, docPath) {
+  if (!channelKey || !docPath) return null;
+  const map = loadJsonStorage(STORAGE_KEY_DEFAULT_VERSIONS, {});
+  const val = map?.[`${channelKey}::${docPath}`];
+  return typeof val === 'string' && val.trim() ? val.trim() : null;
+}
+
+export function setStoredDefaultVersion(channelKey, docPath, versionName) {
+  if (!channelKey || !docPath) return;
+  const map = loadJsonStorage(STORAGE_KEY_DEFAULT_VERSIONS, {});
+  const clean = String(versionName || 'principal').trim() || 'principal';
+  if (clean === 'principal') {
+    delete map[`${channelKey}::${docPath}`];
+  } else {
+    map[`${channelKey}::${docPath}`] = clean;
+  }
+  saveJsonStorage(STORAGE_KEY_DEFAULT_VERSIONS, map);
+}
+
+export function getDocDefaultVersion(channelKey, docPath) {
+  if (!channelKey || !docPath) return 'principal';
+  const fetchKey = `${channelKey}::${docPath}`;
+  if (state.versionFetchedKey === fetchKey && state.versionHistory?.defaultVersion) {
+    const candidate = state.versionHistory.defaultVersion;
+    const versions = state.versionHistory.versions || [];
+    if (versions.some((v) => v.name === candidate)) return candidate;
+  }
+  const chData = state.data?.channels?.[channelKey];
+  const doc = (chData?.docs || []).find((d) => d.path === docPath);
+  if (state.serverMode && doc?.versioning && typeof doc.versioning.defaultVersion === 'string') {
+    const serverDef = doc.versioning.defaultVersion.trim() || 'principal';
+    const known = Array.isArray(doc.versioning.versions) ? doc.versioning.versions : ['principal'];
+    return known.includes(serverDef) ? serverDef : 'principal';
+  }
+  const stored = getStoredDefaultVersion(channelKey, docPath);
+  if (stored) {
+    const known = Array.isArray(doc?.versioning?.versions) ? doc.versioning.versions : null;
+    if (!known || known.includes(stored)) return stored;
+  }
+  return 'principal';
 }
 
 export function activeFilename(doc) {

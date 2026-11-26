@@ -136,3 +136,17 @@ export function getHostnameLabel(url) {
     return String(url || 'Link Externo').slice(0, 32);
   }
 }
+
+export function formatVersionLabel(versionName) {
+  const clean = String(versionName || 'principal').trim();
+  if (!clean || clean.toLowerCase() === 'principal') return 'Base';
+  return clean;
+}
+
+export function formatVersionDescription(versionObj) {
+  const desc = String(versionObj?.description || '').trim();
+  if (!desc || desc === 'Arquivo .md principal no workspace' || desc === 'Principal') {
+    return 'Arquivo .md base no workspace';
+  }
+  return desc;
+}

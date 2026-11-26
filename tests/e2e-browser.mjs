@@ -1201,13 +1201,91 @@ async function run() {
     await chrome.waitFor(`() => !document.getElementById('narrateScriptModal')?.classList.contains('hidden') && (document.getElementById('narModalTextArea')?.value || '').includes('teleprompter')`, 5000, 'narrate script modal loaded clean text');
     await chrome.click('[data-close-modal="narrateScriptModal"]');
     await new Promise((r) => setTimeout(r, 200));
-    console.log('✔ [11/11] /mrj/narracao (Voz MrJ + Crom perfil j + De um Roteiro) + Modal Narrar em Roteiros');
+    console.log('✔ [11/12] /mrj/narracao (Voz MrJ + Crom perfil j + De um Roteiro) + Modal Narrar em Roteiros');
+
+    // 12. Versões do Roteiro sem hierarquia "principal" + versão inicial ("★ Abre primeiro")
+    const verCreateRes = await fetch(`${baseUrl}/api/versions/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channel: 'mrj',
+        path: '02-roteiros/rascunhos/2026-11-roteiro-aurora.md',
+        name: 'roteiro-ler',
+        description: 'Versão falada para leitura',
+        fromVersion: 'principal',
+        content: '---\nid: "aurora-ler"\ntitulo: "Roteiro Aurora"\nstatus: "roteiro"\n---\n\n# Roteiro Falado\n\nTexto falado exclusivo da versao roteiro-ler.\n',
+      }),
+    });
+    assert.equal(verCreateRes.status, 201, 'Criação da versão roteiro-ler deve retornar 201');
+
+    await chrome.navigate(`${baseUrl}/mrj/roteiros/02-roteiros/rascunhos/2026-11-roteiro-aurora.md`);
+    await chrome.waitFor(
+      `() => Boolean(document.querySelector('.version-bar')) && Boolean(document.querySelector('.version-list-insp'))`,
+      6000,
+      'version bar and inspector list visible'
+    );
+
+    const initialVerUi = await chrome.evaluate(`(() => {
+      const inspTitles = Array.from(document.querySelectorAll('.doc-inspector .insp-title')).map((el) => el.textContent.trim());
+      const barText = document.querySelector('.version-bar')?.innerText || '';
+      const listText = document.querySelector('.version-list-insp')?.innerText || '';
+      return { inspTitles, barText, listText };
+    })()`);
+    assert.ok(
+      initialVerUi.inspTitles.some((t) => /Versões do Roteiro/i.test(t)),
+      `Inspetor deve exibir "Versões do Roteiro": ${JSON.stringify(initialVerUi.inspTitles)}`
+    );
+    assert.ok(initialVerUi.listText.includes('Base'), 'Arquivo base deve aparecer rotulado como Base');
+    assert.ok(!/\bprincipal\b/i.test(initialVerUi.listText), `Rótulo "principal" não deve aparecer na lista de versões: ${initialVerUi.listText}`);
+    assert.ok(!/\bprincipal\b/i.test(initialVerUi.barText), `Rótulo "principal" não deve aparecer na barra de versões: ${initialVerUi.barText}`);
+    assert.ok(initialVerUi.barText.includes('Abre primeiro'), 'Badge "Abre primeiro" deve estar visível');
+
+    // Define roteiro-ler como versão inicial ("Abrir primeiro") pela UI
+    await chrome.click('.version-list-insp [data-set-default-version="roteiro-ler"]');
+    await chrome.waitFor(
+      `() => {
+        const row = document.querySelector('.ver-row-item [data-switch-version="roteiro-ler"]')?.closest('.ver-row-item');
+        return Boolean(row && row.innerText.includes('Abre primeiro'));
+      }`,
+      5000,
+      'roteiro-ler marcado como Abre primeiro'
+    );
+
+    // Reabre o roteiro SEM ?versao= na URL -> deve abrir roteiro-ler automaticamente
+    await chrome.navigate(`${baseUrl}/mrj/roteiros/02-roteiros/rascunhos/2026-11-roteiro-aurora.md`);
+    await chrome.waitFor(
+      `() => (document.getElementById('mdArticle')?.innerText || '').includes('Texto falado exclusivo da versao roteiro-ler')`,
+      6000,
+      'roteiro-ler abre automaticamente sem ?versao='
+    );
+    const activePillDefault = await chrome.evaluate(`document.querySelector('.ver-bar-pill.is-active')?.dataset?.switchVersion || ''`);
+    assert.equal(activePillDefault, 'roteiro-ler', 'roteiro-ler deve estar ativa ao abrir sem ?versao=');
+
+    // Abre com ?versao=principal explícito -> deve respeitar a URL e abrir Base
+    await chrome.navigate(`${baseUrl}/mrj/roteiros/02-roteiros/rascunhos/2026-11-roteiro-aurora.md?versao=principal`);
+    await chrome.waitFor(
+      `() => (document.getElementById('mdArticle')?.innerText || '').includes('teleprompter') && document.querySelector('.ver-bar-pill.is-active')?.dataset?.switchVersion === 'principal'`,
+      6000,
+      '?versao=principal respeitado explicitamente'
+    );
+
+    // Aba Histórico & Diff também não deve exibir "principal"
+    await chrome.click('#docModeSwitch [data-doc-mode="history"]');
+    await chrome.waitFor(`() => Boolean(document.querySelector('.git-timeline')) && Boolean(document.getElementById('diffFromSelect'))`, 5000, 'history diff tab visible');
+    const historyTexts = await chrome.evaluate(`({
+      timeline: document.querySelector('.git-timeline')?.innerText || '',
+      fromOpts: Array.from(document.getElementById('diffFromSelect')?.options || []).map((o) => o.textContent),
+    })`);
+    assert.ok(historyTexts.fromOpts.some((t) => t.includes('Base')), 'Select de diff deve rotular Base');
+    assert.ok(!historyTexts.fromOpts.some((t) => /\bprincipal\b/i.test(t)), `Select de diff não deve mostrar "principal": ${JSON.stringify(historyTexts.fromOpts)}`);
+    assert.ok(!/\bprincipal\b/i.test(historyTexts.timeline), `Timeline não deve mostrar "principal": ${historyTexts.timeline}`);
+    console.log('✔ [12/12] Versões do Roteiro (Base, ★ Abre primeiro, auto-abertura sem ?versao=, respeito a ?versao= e Histórico & Diff)');
 
     assert.deepEqual(chrome.consoleErrors, [], `Erros no console do navegador: ${chrome.consoleErrors.join(' | ')}`);
     assert.deepEqual(chrome.pageErrors, [], `Exceções de página no navegador: ${chrome.pageErrors.join(' | ')}`);
     assert.deepEqual(chrome.httpErrors, [], `Respostas HTTP >= 400: ${chrome.httpErrors.join(' | ')}`);
 
-    console.log('[E2E Browser] 11/11 fluxos aprovados com 0 console errors, 0 pageerrors e 0 HTTP >= 400.');
+    console.log('[E2E Browser] 12/12 fluxos aprovados com 0 console errors, 0 pageerrors e 0 HTTP >= 400.');
   } finally {
     await chrome.closeAll().catch(() => {});
     if (typeof server.closeAllConnections === 'function') {

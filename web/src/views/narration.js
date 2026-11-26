@@ -1,7 +1,7 @@
 import { MD } from '../core/constants.js';
 import { renderCurrentView, setView, syncBrowserUrl, updateHeaderChrome } from '../core/router.js';
-import { getActiveChannelData, registerViewRenderer, state } from '../core/state.js';
-import { copyText, formatDatePt, formatNumber, showToast } from '../core/utils.js';
+import { getActiveChannelData, getDocDefaultVersion, registerViewRenderer, state } from '../core/state.js';
+import { copyText, formatDatePt, formatNumber, formatVersionLabel, showToast } from '../core/utils.js';
 
 const ORIGIN_META = {
   roteiro: { label: 'Roteiro', cls: 'st-roteiro' },
@@ -376,7 +376,7 @@ export async function renderNarrationView(container) {
                   <label>
                     <span class="nar-field-label">Versão do Roteiro</span>
                     <select class="select-dark" id="narDocVersionSelect" style="width:100%;">
-                      <option value="${MD.escapeHtml(ns.selectedDocVersion || 'principal')}">${MD.escapeHtml(ns.selectedDocVersion || 'principal')}</option>
+                      <option value="${MD.escapeHtml(ns.selectedDocVersion || 'principal')}">${MD.escapeHtml(formatVersionLabel(ns.selectedDocVersion))}</option>
                     </select>
                   </label>
                 </div>
@@ -620,8 +620,9 @@ async function populateScriptVersionSelect(channelKey, docPath, activeVer) {
   if (!sel || !docPath) return;
   const versions = await loadVersionsForDoc(channelKey, docPath);
   if (!document.body.contains(sel)) return;
+  const defVer = getDocDefaultVersion(channelKey, docPath);
   sel.innerHTML = versions
-    .map((v) => `<option value="${MD.escapeHtml(v)}"${v === activeVer ? ' selected' : ''}>${MD.escapeHtml(v)}</option>`)
+    .map((v) => `<option value="${MD.escapeHtml(v)}"${v === activeVer ? ' selected' : ''}>${MD.escapeHtml(formatVersionLabel(v))}${v === defVer && versions.length > 1 ? ' ★' : ''}</option>`)
     .join('');
 }
 
@@ -762,7 +763,7 @@ function bindNarrationViewEvents(container, channelKey, presets, categories) {
   if (docSel) {
     docSel.onchange = () => {
       ns.selectedDocPath = docSel.value;
-      ns.selectedDocVersion = 'principal';
+      ns.selectedDocVersion = getDocDefaultVersion(channelKey, ns.selectedDocPath);
       populateScriptVersionSelect(channelKey, ns.selectedDocPath, ns.selectedDocVersion);
     };
   }
@@ -1051,7 +1052,7 @@ export async function openScriptNarrationModal({ docPath, docTitle, defaultVersi
         <label>
           <span>Versão do Roteiro</span>
           <select id="narModalVersionSel">
-            ${versions.map((v) => `<option value="${MD.escapeHtml(v)}"${v === selectedVersion ? ' selected' : ''}>${MD.escapeHtml(v)}</option>`).join('')}
+            ${versions.map((v) => `<option value="${MD.escapeHtml(v)}"${v === selectedVersion ? ' selected' : ''}>${MD.escapeHtml(formatVersionLabel(v))}</option>`).join('')}
           </select>
         </label>
         <label>

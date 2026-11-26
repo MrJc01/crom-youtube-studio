@@ -11,6 +11,7 @@ import {
   getActiveDoc,
   getChannelInitials,
   getChannelKeys,
+  getDocDefaultVersion,
   getLifecycleHooks,
   getViewRenderer,
   initSelectedSeriesForChannel,
@@ -156,10 +157,18 @@ export function buildFriendlyUrl(
 
   const qs = new URLSearchParams();
   if (view === 'scripts') {
+    const sameDoc = !docPath || docPath === state.selectedDocPath;
     const modeNames = { read: 'ler', edit: 'editar', prompter: 'teleprompter', history: 'historico' };
-    if (state.docMode && state.docMode !== 'read') qs.set('modo', modeNames[state.docMode] || state.docMode);
-    if (state.activeVersion && state.activeVersion !== 'principal') qs.set('versao', state.activeVersion);
-    if (state.focusMode) qs.set('foco', '1');
+    if (sameDoc && state.docMode && state.docMode !== 'read') {
+      qs.set('modo', modeNames[state.docMode] || state.docMode);
+    }
+    if (sameDoc && docPath) {
+      const defaultVer = getDocDefaultVersion(ch, docPath);
+      if (state.activeVersion && state.activeVersion !== defaultVer) {
+        qs.set('versao', state.activeVersion);
+      }
+    }
+    if (sameDoc && state.focusMode) qs.set('foco', '1');
   } else if (view === 'recorder' && state.recorder?.linkedDocPath) {
     qs.set('roteiro', state.recorder.linkedDocPath);
   } else if (view === 'link' && state.activeLinkTab?.externalUrl) {
@@ -198,7 +207,16 @@ export function applyRouteSnapshot(route) {
   state.view = route.view || 'dashboard';
   state.selectedDocPath = route.docPath || null;
   state.docMode = route.docMode || 'read';
-  state.activeVersion = route.verParam || 'principal';
+  if (state.view === 'scripts' && state.selectedDocPath) {
+    state.versionExplicit = Boolean(route.verParam);
+    state.activeVersion = route.verParam || getDocDefaultVersion(route.channelKey, state.selectedDocPath);
+    state.versionContentLoading = Boolean(state.serverMode && state.activeVersion !== 'principal');
+  } else {
+    state.versionExplicit = false;
+    state.activeVersion = 'principal';
+    state.versionContentLoading = false;
+  }
+  state.loadedVersionKey = '';
   state.focusMode = Boolean(route.focusMode && state.view === 'scripts');
   state.activeBoardId = route.boardId || null;
   state.boardDirtyScene = null;
@@ -560,6 +578,9 @@ export function switchChannel(channelKey, { preserveView = true } = {}) {
   state.mapFlowFullscreen = false;
   state.mapFlowAutoFitKey = '';
   state.activeVersion = 'principal';
+  state.versionExplicit = false;
+  state.versionContentLoading = false;
+  state.loadedVersionKey = '';
   state.versionHistory = null;
   state.versionFetchedKey = '';
   state.diffDocPath = '';
@@ -675,6 +696,9 @@ export function setView(
     state.selectedDocPath = null;
     state.focusMode = false;
     state.activeVersion = 'principal';
+    state.versionExplicit = false;
+    state.versionContentLoading = false;
+    state.loadedVersionKey = '';
     state.versionHistory = null;
     state.versionFetchedKey = '';
     state.diffDocPath = '';
@@ -689,7 +713,11 @@ export function setView(
     state.commitMessageDraft = '';
   } else if (docPath) {
     state.selectedDocPath = docPath;
-    state.activeVersion = 'principal';
+    const initialVer = getDocDefaultVersion(state.activeChannel, docPath);
+    state.activeVersion = initialVer;
+    state.versionExplicit = false;
+    state.versionContentLoading = Boolean(state.serverMode && initialVer !== 'principal');
+    state.loadedVersionKey = '';
     state.versionHistory = null;
     state.versionFetchedKey = '';
     state.diffDocPath = '';

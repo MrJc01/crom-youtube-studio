@@ -535,6 +535,9 @@ export function bindGlobalEvents() {
       state.versionFetchedKey = `${state.activeChannel}::${activeDoc.path}`;
       const parsed = MD.parseFrontmatter(json.content || '');
       state.activeVersion = json.version.name;
+      state.versionExplicit = true;
+      state.versionContentLoading = false;
+      state.loadedVersionKey = `${state.activeChannel}::${activeDoc.path}::${json.version.name}`;
       state.dirtyMeta = Object.keys(parsed.meta).length ? parsed.meta : null;
       state.dirtyBody = parsed.body;
       state.hasUnsavedEdits = false;
@@ -773,8 +776,8 @@ export function bindGlobalEvents() {
     syncActiveTabFromState();
     updateHeaderChrome();
     renderCurrentView();
-    if (state.view === 'scripts' && state.activeVersion !== 'principal' && state.selectedDocPath) {
-      switchDocVersion(state.selectedDocPath, state.activeVersion);
+    if (state.view === 'scripts' && state.activeVersion !== 'principal' && state.selectedDocPath && !state.serverMode) {
+      switchDocVersion(state.selectedDocPath, state.activeVersion, { silent: true, replaceUrl: true });
     }
   });
 
@@ -831,8 +834,8 @@ export async function init() {
   }
   updateHeaderChrome();
   renderCurrentView();
-  if (state.view === 'scripts' && state.activeVersion !== 'principal' && state.selectedDocPath) {
-    await switchDocVersion(state.selectedDocPath, state.activeVersion);
+  if (state.view === 'scripts' && state.activeVersion !== 'principal' && state.selectedDocPath && !state.serverMode) {
+    await switchDocVersion(state.selectedDocPath, state.activeVersion, { silent: true, replaceUrl: true });
   }
 }
 

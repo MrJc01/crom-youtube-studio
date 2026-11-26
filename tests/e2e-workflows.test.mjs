@@ -190,6 +190,54 @@ test('Jornada 1: Roteiros, Git rNNN, Versões Alternativas, Diff, Restore, SSE e
       }),
     });
     assert.equal(altRes.status, 201);
+    const altJson = await altRes.json();
+    assert.equal(altJson.history.defaultVersion, 'principal');
+    assert.equal(altJson.history.versions.find((v) => v.name === 'principal')?.isDefault, true);
+    assert.equal(altJson.history.versions.find((v) => v.name === 'v2-enxuta')?.isDefault, false);
+
+    const setDefRes = await fetch(`${baseUrl}/api/versions/default`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel: 'mrj', path: docPath, versionName: 'v2-enxuta' }),
+    });
+    assert.equal(setDefRes.status, 200);
+    const setDefJson = await setDefRes.json();
+    assert.equal(setDefJson.defaultVersion, 'v2-enxuta');
+    assert.equal(setDefJson.history.defaultVersion, 'v2-enxuta');
+    assert.equal(setDefJson.history.versions.find((v) => v.name === 'v2-enxuta')?.isDefault, true);
+    assert.equal(setDefJson.history.versions.find((v) => v.name === 'principal')?.isDefault, false);
+    const stateDoc = setDefJson.state.channels.mrj.docs.find((d) => d.path === docPath);
+    assert.equal(stateDoc?.versioning?.defaultVersion, 'v2-enxuta');
+    await waitSse((b) => b.includes('"reason":"version-default"'));
+
+    const missingDefRes = await fetch(`${baseUrl}/api/versions/default`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel: 'mrj', path: docPath, versionName: 'nao-existe' }),
+    });
+    assert.equal(missingDefRes.status, 404);
+
+    const delVerRes = await fetch(
+      `${baseUrl}/api/versions?channel=mrj&path=${encodeURIComponent(docPath)}&versionName=v2-enxuta`,
+      { method: 'DELETE' }
+    );
+    assert.equal(delVerRes.status, 200);
+    const delVerJson = await delVerRes.json();
+    assert.equal(delVerJson.defaultVersion, 'principal');
+    assert.equal(delVerJson.history.defaultVersion, 'principal');
+
+    const altRes2 = await fetch(`${baseUrl}/api/versions/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channel: 'mrj',
+        path: docPath,
+        name: 'v2-enxuta',
+        fromVersion: 'principal',
+        content: `${v1Text}Gancho enxuto alternativo\n`,
+      }),
+    });
+    assert.equal(altRes2.status, 201);
 
     const diffRes = await fetch(
       `${baseUrl}/api/versions/diff?channel=mrj&path=${encodeURIComponent(docPath)}&from=ver:principal&to=ver:v2-enxuta`
@@ -205,7 +253,7 @@ test('Jornada 1: Roteiros, Git rNNN, Versões Alternativas, Diff, Restore, SSE e
     });
     assert.equal(restoreRevRes.status, 200);
     const restoreRevJson = await restoreRevRes.json();
-    assert.equal(restoreRevJson.revision.id, 'r004');
+    assert.equal(restoreRevJson.revision.id, 'r005');
     assert.equal(fs.readFileSync(path.join(wsMrj, docPath), 'utf8'), v1Text);
 
     const delRes = await fetch(`${baseUrl}/api/doc?channel=mrj&path=${encodeURIComponent(docPath)}`, { method: 'DELETE' });

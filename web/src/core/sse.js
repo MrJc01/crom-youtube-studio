@@ -9,6 +9,7 @@ import {
   getActiveChannelData,
   getActiveDoc,
   getChannelKeys,
+  getDocDefaultVersion,
   getLifecycleHooks,
   initSelectedSeriesForChannel,
   normalizePayload,
@@ -63,7 +64,11 @@ export async function handleLiveWorkspaceUpdate(source) {
       updateHeaderChrome();
       const activeDoc = getActiveDoc();
       if (activeDoc) {
-        await hooks.loadVersionHistory(activeDoc.path, { force: true, skipRender: state.docMode === 'edit' });
+        await hooks.loadVersionHistory(activeDoc.path, {
+          force: true,
+          skipRender: state.docMode === 'edit',
+          autoSelectDefault: false,
+        });
       }
       showToast('Alteração externa detectada no disco (rascunho atual preservado)');
       return;
@@ -133,7 +138,7 @@ export async function handleLiveWorkspaceUpdate(source) {
     if (state.view === 'scripts') {
       const activeDoc = getActiveDoc();
       if (activeDoc) {
-        await hooks.loadVersionHistory(activeDoc.path, { force: true });
+        await hooks.loadVersionHistory(activeDoc.path, { force: true, autoSelectDefault: false });
         if (state.activeVersion !== 'principal') {
           try {
             const verRes = await fetch(
@@ -145,12 +150,20 @@ export async function handleLiveWorkspaceUpdate(source) {
               const parsed = MD.parseFrontmatter(verJson.content || '');
               state.dirtyMeta = Object.keys(parsed.meta).length ? parsed.meta : null;
               state.dirtyBody = parsed.body;
+              state.loadedVersionKey = `${state.activeChannel}::${activeDoc.path}::${state.activeVersion}`;
+              state.versionContentLoading = false;
             } else {
-              state.activeVersion = 'principal';
+              const fallbackVer = getDocDefaultVersion(state.activeChannel, activeDoc.path);
+              state.activeVersion = fallbackVer;
+              state.versionExplicit = false;
               state.dirtyMeta = null;
               state.dirtyBody = null;
+              state.loadedVersionKey = '';
               syncBrowserUrl({ replace: true });
               updateHeaderChrome();
+              if (fallbackVer !== 'principal') {
+                await hooks.switchDocVersion(activeDoc.path, fallbackVer, { silent: true, replaceUrl: true });
+              }
             }
             if (state.view === 'scripts') {
               renderCurrentView();

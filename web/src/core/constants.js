@@ -129,6 +129,7 @@ export const STATUS_VISUAL = {
 export const STORAGE_KEY_PREFS = 'crom_studio_prefs_v1';
 export const STORAGE_KEY_DRAFTS = 'crom_studio_drafts_v2';
 export const STORAGE_KEY_TABS = 'crom_studio_tabs_v1';
+export const STORAGE_KEY_DEFAULT_VERSIONS = 'crom_studio_default_versions_v1';
 
 export const SERIE_FLOW_PALETTE = ['#ec4899', '#38bdf8', '#a855f7', '#f59e0b', '#22d3ee', '#34d399', '#fb7185', '#818cf8'];
 

@@ -22,6 +22,7 @@ import {
   promoteVersion,
   readRefContent,
   restoreRevision,
+  setDefaultVersion,
 } from '../versioning.mjs';
 import {
   PROTECTED_FILES,
@@ -304,6 +305,25 @@ export async function handleDocsRoutes({
       type: 'change',
       source: 'api',
       reason: 'version-promote',
+      channel: target.channel,
+      path: target.rel,
+      ts: Date.now(),
+    });
+    return sendJson(res, 200, { ...result, channel: target.channel, path: target.rel, state });
+  }
+
+  if ((method === 'POST' || method === 'PUT') && pathname === '/api/versions/default') {
+    const body = await readJsonBody(req);
+    const target = resolveSafeMdPath(config, body.channel || config.defaultChannel, body.path);
+    watchHub.markApiWrite();
+    const result = setDefaultVersion(target.workspaceReal, target.rel, {
+      versionName: body.versionName || body.version || 'principal',
+    });
+    const state = stateCache.refreshChannel(target.channel, { flushDisk: true });
+    watchHub.broadcast({
+      type: 'change',
+      source: 'api',
+      reason: 'version-default',
       channel: target.channel,
       path: target.rel,
       ts: Date.now(),

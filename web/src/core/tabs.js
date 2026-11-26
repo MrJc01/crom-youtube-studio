@@ -1,6 +1,7 @@
 import { MD, STORAGE_KEY_TABS, VIEW_TITLES } from './constants.js';
 import {
   getActiveChannelData,
+  getDocDefaultVersion,
   getLifecycleHooks,
   initSelectedSeriesForChannel,
   state,
@@ -141,6 +142,13 @@ export function applyTabToStateSilent(tab) {
   state.activeLinkTab = null;
   state.view = tab.view || 'dashboard';
   state.selectedDocPath = state.view === 'scripts' ? tab.docPath || null : state.selectedDocPath;
+  if (state.view === 'scripts' && tab.docPath) {
+    const initialVer = getDocDefaultVersion(state.activeChannel, tab.docPath);
+    state.activeVersion = initialVer;
+    state.versionExplicit = false;
+    state.versionContentLoading = Boolean(state.serverMode && initialVer !== 'principal');
+    state.loadedVersionKey = '';
+  }
   if (state.view === 'whiteboard') {
     state.activeBoardId = tab.boardId || null;
   }
@@ -389,7 +397,11 @@ export function activateTab(tabId) {
 
     if (state.view === 'scripts') {
       state.selectedDocPath = tab.docPath || null;
-      state.activeVersion = 'principal';
+      const initialVer = tab.docPath ? getDocDefaultVersion(state.activeChannel, tab.docPath) : 'principal';
+      state.activeVersion = initialVer;
+      state.versionExplicit = false;
+      state.versionContentLoading = Boolean(state.serverMode && tab.docPath && initialVer !== 'principal');
+      state.loadedVersionKey = '';
       state.versionHistory = null;
       state.versionFetchedKey = '';
       state.diffDocPath = '';

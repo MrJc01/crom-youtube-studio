@@ -1,7 +1,7 @@
 import { MD, SERIE_META } from './constants.js';
 import { setView } from './router.js';
 import { getActiveChannelData, getChannelSeriesList, state } from './state.js';
-import { copyText, formatDatePt, showToast } from './utils.js';
+import { copyText, formatDatePt, formatVersionLabel, showToast } from './utils.js';
 
 export function openNewWorkspaceModal() {
   if (!state.serverMode) {
@@ -287,23 +287,25 @@ export function openNotifDrawer() {
 export function openNewVersionModal(doc) {
   if (!doc) return;
   if (!state.serverMode) {
-    showToast('Criar versão alternativa requer o servidor local rodando.');
+    showToast('Criar nova versão requer o servidor local rodando.');
     return;
   }
   const nameEl = document.getElementById('newVerName');
   const descEl = document.getElementById('newVerDesc');
   const fromEl = document.getElementById('newVerFrom');
-  const versions = state.versionHistory?.versions || [{ name: 'principal', description: 'Principal' }];
+  const versions = state.versionHistory?.versions || [{ name: 'principal', description: 'Arquivo .md base no workspace' }];
+  const defaultVer = state.versionHistory?.defaultVersion || 'principal';
   const revs = (state.versionHistory?.revisions || []).filter((r) => r.id && r.id !== 'disk').slice(0, 12);
 
   const existingVariants = versions.filter((v) => !v.isPrimary).length;
-  nameEl.value = `v${existingVariants + 2}-alternativa`;
+  nameEl.value = `v${existingVariants + 2}-versao`;
   descEl.value = '';
   fromEl.innerHTML = [
-    ...versions.map(
-      (v) =>
-        `<option value="ver:${MD.escapeHtml(v.name)}"${v.name === state.activeVersion ? ' selected' : ''}>Versão: ${MD.escapeHtml(v.name)}${v.headRev ? ` (${v.headRev})` : ''}</option>`
-    ),
+    ...versions.map((v) => {
+      const lbl = formatVersionLabel(v.name);
+      const star = v.name === defaultVer ? ' ★' : '';
+      return `<option value="ver:${MD.escapeHtml(v.name)}"${v.name === state.activeVersion ? ' selected' : ''}>Versão: ${MD.escapeHtml(lbl)}${star}${v.headRev ? ` (${v.headRev})` : ''}</option>`;
+    }),
     ...revs.map(
       (r) => `<option value="rev:${MD.escapeHtml(r.id)}">Commit ${MD.escapeHtml(r.id)} — ${MD.escapeHtml(r.message)}</option>`
     ),
