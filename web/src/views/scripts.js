@@ -1730,13 +1730,20 @@ export function renderScriptsView(container) {
   }
   const mdArt = document.getElementById('mdArticle');
   if (mdArt) {
-    mdArt.addEventListener('dblclick', (ev) => {
+    const jumpSpeechToEventTarget = (ev, requireActive) => {
+      if (requireActive && !speechState.active) return;
+      if (ev.target?.closest?.('a, button, video, audio, input, select, textarea, summary')) return;
+      if (requireActive && window.getSelection?.()?.toString().trim()) return;
       const target = ev.target?.closest?.('h1, h2, h3, h4, p, li, blockquote, figcaption');
       if (!target) return;
-      startOrToggleBrowserSpeech(0);
+      if (!speechState.active || !speechState.blocks.length) {
+        startOrToggleBrowserSpeech(0);
+      }
       const idx = speechState.blocks.findIndex((b) => b.el === target);
       if (idx >= 0) speakBlockAt(idx);
-    });
+    };
+    mdArt.addEventListener('click', (ev) => jumpSpeechToEventTarget(ev, true));
+    mdArt.addEventListener('dblclick', (ev) => jumpSpeechToEventTarget(ev, false));
   }
 
   container.querySelectorAll('#docModeSwitch button').forEach((btn) => {
