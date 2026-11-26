@@ -17,6 +17,170 @@ import { syncActiveTabFromState } from '../core/tabs.js';
 import { openKdenliveModal, openNewDocModal, openNewVersionModal } from '../core/modals.js';
 import { openScriptNarrationModal } from './narration.js';
 
+let speechState = {
+  active: false,
+  paused: false,
+  idx: 0,
+  rate: 1.0,
+  blocks: [],
+  activeEl: null,
+  runId: 0,
+};
+
+function clearSpeechHighlight() {
+  if (speechState.activeEl) {
+    speechState.activeEl.style.outline = '';
+    speechState.activeEl.style.background = '';
+    speechState.activeEl.style.borderRadius = '';
+    speechState.activeEl.style.paddingLeft = '';
+    speechState.activeEl = null;
+  }
+}
+
+function updateSpeechToolbarUi() {
+  const playBtn = document.getElementById('speechToggleBtn');
+  const stopBtn = document.getElementById('speechStopBtn');
+  const rateBtn = document.getElementById('speechRateBtn');
+  if (playBtn) {
+    if (!speechState.active) {
+      playBtn.textContent = '🔊 Ouvir';
+      playBtn.classList.remove('is-active');
+    } else if (speechState.paused) {
+      playBtn.textContent = '▶ Retomar';
+      playBtn.classList.add('is-active');
+    } else {
+      playBtn.textContent = '⏸ Pausar';
+      playBtn.classList.add('is-active');
+    }
+  }
+  if (stopBtn) stopBtn.style.display = speechState.active ? '' : 'none';
+  if (rateBtn) rateBtn.textContent = `${speechState.rate}x`;
+}
+
+function stopBrowserSpeech() {
+  speechState.runId += 1;
+  speechState.active = false;
+  speechState.paused = false;
+  speechState.idx = 0;
+  speechState.blocks = [];
+  clearSpeechHighlight();
+  if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+    try {
+      window.speechSynthesis.cancel();
+    } catch {
+      // ignore
+    }
+  }
+  updateSpeechToolbarUi();
+}
+
+function pickPtVoice() {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
+  const voices = window.speechSynthesis.getVoices() || [];
+  return (
+    voices.find((v) => /^pt[-_]br/i.test(v.lang)) ||
+    voices.find((v) => /^pt/i.test(v.lang)) ||
+    null
+  );
+}
+
+function cleanSpeechText(raw) {
+  return String(raw || '')
+    .replace(/\[(mrj|crom|gancho|tela|b-roll|corte|áudio|audio|sfx)\]/gi, ' ')
+    .replace(/\b\d{2}:\d{2}(?:\s*[–-]\s*\d{2}:\d{2})?\s*[—-]?/g, ' ')
+    .replace(/https?:\/\/\S+/g, ' link ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function speakBlockAt(index) {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+    showToast('Este navegador não suporta síntese de voz (speechSynthesis).', 'warn');
+    return;
+  }
+  if (index >= speechState.blocks.length) {
+    stopBrowserSpeech();
+    showToast('Leitura em voz alta concluída.', 'ok');
+    return;
+  }
+  const runId = ++speechState.runId;
+  speechState.active = true;
+  speechState.paused = false;
+  speechState.idx = index;
+
+  const item = speechState.blocks[index];
+  clearSpeechHighlight();
+  speechState.activeEl = item.el;
+  item.el.style.outline = '2px solid var(--accent, #00e5ff)';
+  item.el.style.background = 'rgba(0, 229, 255, 0.11)';
+  item.el.style.borderRadius = '8px';
+  item.el.style.paddingLeft = '6px';
+  item.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  updateSpeechToolbarUi();
+
+  try {
+    window.speechSynthesis.cancel();
+  } catch {
+    // ignore
+  }
+
+  const utt = new SpeechSynthesisUtterance(item.text);
+  const voice = pickPtVoice();
+  if (voice) utt.voice = voice;
+  utt.lang = voice?.lang || 'pt-BR';
+  utt.rate = speechState.rate;
+  utt.onend = () => {
+    if (!speechState.active || speechState.paused || speechState.runId !== runId) return;
+    speakBlockAt(index + 1);
+  };
+  utt.onerror = (ev) => {
+    if (ev?.error === 'interrupted' || ev?.error === 'canceled') return;
+    if (!speechState.active || speechState.runId !== runId) return;
+    speakBlockAt(index + 1);
+  };
+  window.speechSynthesis.speak(utt);
+}
+
+function startOrToggleBrowserSpeech(startIdx = null) {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+    showToast('Este navegador não suporta leitura em voz alta.', 'warn');
+    return;
+  }
+  if (startIdx === null && speechState.active && !speechState.paused) {
+    speechState.paused = true;
+    speechState.runId += 1;
+    try {
+      window.speechSynthesis.cancel();
+    } catch {
+      // ignore
+    }
+    updateSpeechToolbarUi();
+    return;
+  }
+  if (startIdx === null && speechState.active && speechState.paused) {
+    speakBlockAt(speechState.idx);
+    return;
+  }
+
+  const art = document.getElementById('mdArticle');
+  if (!art) return;
+  const rawEls = Array.from(art.querySelectorAll('h1, h2, h3, h4, p, li, blockquote, figcaption'));
+  const blocks = [];
+  for (const el of rawEls) {
+    if (el.closest('figure') && el.tagName !== 'FIGCAPTION') continue;
+    const text = cleanSpeechText(el.innerText || el.textContent || '');
+    if (text && text.length >= 2) {
+      blocks.push({ el, text });
+    }
+  }
+  if (!blocks.length) {
+    showToast('Nenhum texto encontrado para ler.', 'warn');
+    return;
+  }
+  speechState.blocks = blocks;
+  speakBlockAt(startIdx !== null ? Math.max(0, Math.min(startIdx, blocks.length - 1)) : 0);
+}
+
 export async function loadVersionHistory(docPath, { force = false, skipRender = false } = {}) {
   if (!state.serverMode || !docPath) return null;
   const chKey = state.activeChannel;
@@ -1106,6 +1270,13 @@ export function renderScriptsView(container) {
             <span id="fontZoomVal">${state.readerFontSize}px</span>
             <button type="button" id="fontPlusBtn">A+</button>
           </div>
+          ${state.docMode === 'read' ? `
+            <div class="zoom-group" title="Leitura em voz alta pelo navegador com destaque no texto">
+              <button type="button" id="speechToggleBtn">🔊 Ouvir</button>
+              <button type="button" id="speechRateBtn" title="Velocidade da fala">${speechState.rate}x</button>
+              <button type="button" id="speechStopBtn" title="Parar leitura" style="display:${speechState.active ? '' : 'none'};">⏹</button>
+            </div>
+          ` : ''}
           ${state.docMode === 'edit' ? `<button type="button" class="icon-btn-sm${state.editorSplit ? ' is-active' : ''}" id="toggleSplitBtn" title="Alternar entre Editor Split e Painel Único">${state.editorSplit ? '⫿ Split' : '▭ Único'}</button>` : ''}
           <button type="button" class="icon-btn-sm${state.focusMode ? ' is-active' : ''}" id="toggleFocusBtn" title="Modo Foco (Esc para sair)">⛶</button>
           <button type="button" class="btn-sm btn-accent" id="saveDocBtn">Salvar${state.hasUnsavedEdits ? ' •' : ''} (Ctrl+S)</button>
@@ -1541,9 +1712,37 @@ export function renderScriptsView(container) {
   const fontPlusBtn = document.getElementById('fontPlusBtn');
   if (fontPlusBtn) fontPlusBtn.onclick = () => applyFontSize(state.readerFontSize + 1);
 
+  const speechToggleBtn = document.getElementById('speechToggleBtn');
+  if (speechToggleBtn) speechToggleBtn.onclick = () => startOrToggleBrowserSpeech();
+  const speechStopBtn = document.getElementById('speechStopBtn');
+  if (speechStopBtn) speechStopBtn.onclick = () => stopBrowserSpeech();
+  const speechRateBtn = document.getElementById('speechRateBtn');
+  if (speechRateBtn) {
+    const rates = [1.0, 1.15, 1.3, 1.5, 0.9];
+    speechRateBtn.onclick = () => {
+      const next = rates[(rates.indexOf(speechState.rate) + 1) % rates.length];
+      speechState.rate = next;
+      updateSpeechToolbarUi();
+      if (speechState.active && !speechState.paused) {
+        speakBlockAt(speechState.idx);
+      }
+    };
+  }
+  const mdArt = document.getElementById('mdArticle');
+  if (mdArt) {
+    mdArt.addEventListener('dblclick', (ev) => {
+      const target = ev.target?.closest?.('h1, h2, h3, h4, p, li, blockquote, figcaption');
+      if (!target) return;
+      startOrToggleBrowserSpeech(0);
+      const idx = speechState.blocks.findIndex((b) => b.el === target);
+      if (idx >= 0) speakBlockAt(idx);
+    });
+  }
+
   container.querySelectorAll('#docModeSwitch button').forEach((btn) => {
     btn.onclick = () => {
       stopPrompter();
+      stopBrowserSpeech();
       state.docMode = btn.dataset.docMode;
       syncBrowserUrl({ replace: true });
       renderScriptsView(container);

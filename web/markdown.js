@@ -166,6 +166,19 @@
 
     text = escapeHtml(text);
 
+    // Markdown media ![alt](url) -> <video> for mp4/webm, <img> for images
+    text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, href) => {
+      const trimmedHref = String(href || '').trim().replace(/&amp;/g, '&');
+      const safeHref = sanitizeUrl(trimmedHref);
+      if (safeHref === '#') return escapeHtml(alt || '');
+      const isVideo = /\.(mp4|webm)(\?.*)?$/i.test(trimmedHref) || /[?&]path=[^&]*\.(mp4|webm)(&|$)/i.test(trimmedHref);
+      const caption = alt ? `<figcaption style="margin-top:6px;font-size:12px;opacity:0.82;">${alt}</figcaption>` : '';
+      if (isVideo) {
+        return `<figure class="md-media-card" style="margin:12px 0;padding:10px;border:1px solid rgba(255,255,255,0.12);border-radius:12px;background:rgba(0,0,0,0.28);"><video controls muted playsinline preload="metadata" src="${safeHref}" style="width:100%;max-height:420px;border-radius:8px;display:block;"></video>${caption}</figure>`;
+      }
+      return `<figure class="md-media-card" style="margin:12px 0;padding:10px;border:1px solid rgba(255,255,255,0.12);border-radius:12px;background:rgba(0,0,0,0.28);"><img src="${safeHref}" alt="${alt}" loading="lazy" style="max-width:100%;max-height:520px;border-radius:8px;display:block;">${caption}</figure>`;
+    });
+
     // Markdown links [label](url)
     text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => {
       const trimmedHref = String(href || '').trim();

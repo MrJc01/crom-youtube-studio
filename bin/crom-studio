@@ -56,6 +56,18 @@ if [[ "${1:-}" == "narrar" ]]; then
   exec "$NODE_BIN" "$REPO_ROOT/src/tts-cli.mjs" "$@"
 fi
 
+if [[ "${1:-}" == "audio" ]]; then
+  shift
+  require_node
+  exec "$NODE_BIN" "$REPO_ROOT/src/audio-cli.mjs" "$@"
+fi
+
+if [[ "${1:-}" == "publicar" ]]; then
+  shift
+  require_node
+  exec "$NODE_BIN" "$REPO_ROOT/src/publicar-cli.mjs" "$@"
+fi
+
 if [[ "${1:-}" == "doctor" ]]; then
   shift
   require_node
@@ -107,6 +119,8 @@ Uso: crom-studio [opções]
      crom-studio backup [--canal mrj|crom|all] [--com-gravacoes] [--output caminho.tar.gz]
      crom-studio roteiro <subcomando> [opções]
      crom-studio narrar [--canal mrj|crom] [--texto "..." | --arquivo <roteiro.md>] [opções]
+     crom-studio audio <auditar|cortar|limpar> [opções]
+     crom-studio publicar --canal mrj|crom --arquivo <roteiro.md> --url <youtube-url> [--mover] [--kit]
 
 Opções:
   --tray            Inicia ou aciona o ícone na bandeja do sistema (padrão)

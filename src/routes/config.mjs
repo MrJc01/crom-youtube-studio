@@ -9,7 +9,7 @@ import {
 } from '../config.mjs';
 import { createBackupArchive } from '../lib/backup.mjs';
 import { runDoctor } from '../lib/doctor.mjs';
-import { readJsonBody, sendJson } from './http-utils.mjs';
+import { MIME_TYPES, readJsonBody, resolveChannel, sendJson } from './http-utils.mjs';
 
 function cleanupTempArchive(archivePath) {
   if (!archivePath || typeof archivePath !== 'string') return;
@@ -138,6 +138,77 @@ export async function handleConfigRoutes({
   if (method === 'GET' && pathname === '/api/doctor') {
     const report = await runDoctor(config);
     return sendJson(res, 200, report);
+  }
+
+  if ((method === 'GET' || method === 'HEAD') && pathname === '/api/kdenlive/media') {
+    if (!config.kdenliveRoot || !fs.existsSync(config.kdenliveRoot)) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(method === 'HEAD' ? undefined : 'Pasta Kdenlive não encontrada');
+      return true;
+    }
+    const rawChannel = urlObj.searchParams.get('channel') || urlObj.searchParams.get('canal') || config.defaultChannel;
+    const { cfg } = resolveChannel(config, rawChannel);
+    const videoSlug = String(urlObj.searchParams.get('video') || '').trim();
+    const relPath = String(urlObj.searchParams.get('path') || '').replace(/\\/g, '/').replace(/^\/+/, '').trim();
+    const validSeg = (s) => s && s !== '.' && s !== '..' && !s.startsWith('.') && !s.includes('\0');
+    if (!validSeg(videoSlug) || videoSlug.includes('/') || !relPath || !relPath.split('/').every(validSeg)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(method === 'HEAD' ? undefined : 'Caminho inválido');
+      return true;
+    }
+    const kdenliveReal = fs.realpathSync(config.kdenliveRoot);
+    const folderParts = String(cfg?.kdenliveFolder || 'videos').split('/').filter(Boolean);
+    const videoRoot = path.resolve(kdenliveReal, ...folderParts, videoSlug);
+    if (!videoRoot.startsWith(kdenliveReal + path.sep) || !fs.existsSync(videoRoot)) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(method === 'HEAD' ? undefined : 'Projeto de vídeo não encontrado');
+      return true;
+    }
+    const videoRootReal = fs.realpathSync(videoRoot);
+    const abs = path.resolve(videoRootReal, relPath);
+    if (!abs.startsWith(videoRootReal + path.sep) || !fs.existsSync(abs)) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(method === 'HEAD' ? undefined : 'Mídia não encontrada');
+      return true;
+    }
+    const st = fs.lstatSync(abs);
+    if (st.isSymbolicLink() || !st.isFile()) {
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(method === 'HEAD' ? undefined : 'Acesso negado');
+      return true;
+    }
+    const ext = path.extname(abs).toLowerCase();
+    const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+    const rangeHeader = String(req.headers.range || '');
+    if (rangeHeader && /^bytes=\d*-\d*$/.test(rangeHeader)) {
+      const [sRaw, eRaw] = rangeHeader.replace(/^bytes=/, '').split('-');
+      const start = sRaw ? Number(sRaw) : 0;
+      const end = eRaw ? Math.min(st.size - 1, Number(eRaw)) : st.size - 1;
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= st.size) {
+        res.writeHead(416, { 'Content-Range': `bytes */${st.size}` });
+        res.end();
+        return true;
+      }
+      res.writeHead(206, {
+        'Content-Type': contentType,
+        'Content-Range': `bytes ${start}-${end}/${st.size}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': end - start + 1,
+        'Cache-Control': 'no-cache',
+      });
+      if (method === 'HEAD') { res.end(); return true; }
+      fs.createReadStream(abs, { start, end }).pipe(res);
+      return true;
+    }
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Content-Length': st.size,
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'no-cache',
+    });
+    if (method === 'HEAD') { res.end(); return true; }
+    fs.createReadStream(abs).pipe(res);
+    return true;
   }
 
   if (method === 'GET' && pathname === '/api/backup/download') {
