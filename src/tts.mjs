@@ -1762,3 +1762,26 @@ export function streamNarrationAudio(wsPath, relPath, req, res) {
   }
   fs.createReadStream(realAbs).pipe(res);
 }
+
+export async function synthesizeQuickSpeechWav(text, { kdenliveRoot = '' } = {}) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
+  if (!clean) throw httpError('Texto vazio para leitura.', 400);
+  const env = discoverTtsEnvironment({ kdenliveRoot });
+  if (!env.piper.binaryAvailable) {
+    throw httpError('Piper TTS não encontrado para leitura rápida.', 503);
+  }
+  const preset = {
+    modelName: 'pt_BR-faber-medium.onnx',
+    lengthScale: 1.02,
+    noiseScale: 0.667,
+    noiseW: 0.8,
+    sentenceSilence: 0.15,
+  };
+  const tmpWav = path.join(os.tmpdir(), `crom-speak-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.wav`);
+  try {
+    await synthesizePiperRaw(clean, preset, tmpWav, env);
+    return fs.readFileSync(tmpWav);
+  } finally {
+    try { fs.unlinkSync(tmpWav); } catch { /* ignore */ }
+  }
+}

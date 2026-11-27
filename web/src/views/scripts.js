@@ -38,6 +38,9 @@ let speechState = {
   blocks: [],
   activeEl: null,
   runId: 0,
+  mode: 'browser', // 'browser' | 'server-piper'
+  audio: null,
+  cache: new Map(), // index -> Promise<string blobUrl>
 };
 
 function clearSpeechHighlight() {
@@ -48,6 +51,26 @@ function clearSpeechHighlight() {
     speechState.activeEl.style.paddingLeft = '';
     speechState.activeEl = null;
   }
+}
+
+function clearServerSpeechAudio() {
+  if (speechState.audio) {
+    try {
+      speechState.audio.onended = null;
+      speechState.audio.onerror = null;
+      speechState.audio.pause();
+      speechState.audio.src = '';
+    } catch {
+      // ignore
+    }
+    speechState.audio = null;
+  }
+  for (const prom of speechState.cache.values()) {
+    Promise.resolve(prom)
+      .then((u) => { if (u) URL.revokeObjectURL(u); })
+      .catch(() => {});
+  }
+  speechState.cache.clear();
 }
 
 function updateSpeechToolbarUi() {
@@ -77,6 +100,7 @@ function stopBrowserSpeech() {
   speechState.idx = 0;
   speechState.blocks = [];
   clearSpeechHighlight();
+  clearServerSpeechAudio();
   if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
     try {
       window.speechSynthesis.cancel();
@@ -97,6 +121,30 @@ function pickPtVoice() {
   );
 }
 
+function shouldUseServerPiper() {
+  if (!state.serverMode) return false;
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return true;
+  const voices = window.speechSynthesis.getVoices() || [];
+  return voices.length === 0;
+}
+
+function prefetchPiperBlock(index) {
+  if (index < 0 || index >= speechState.blocks.length) return null;
+  if (speechState.cache.has(index)) return speechState.cache.get(index);
+  const text = speechState.blocks[index].text;
+  const prom = fetch('/api/tts/speak', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  }).then(async (res) => {
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
+  });
+  speechState.cache.set(index, prom);
+  return prom;
+}
+
 function cleanSpeechText(raw) {
   return String(raw || '')
     .replace(/\[(mrj|crom|gancho|tela|b-roll|corte|áudio|audio|sfx)\]/gi, ' ')
@@ -106,11 +154,43 @@ function cleanSpeechText(raw) {
     .trim();
 }
 
-function speakBlockAt(index) {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-    showToast('Este navegador não suporta síntese de voz (speechSynthesis).', 'warn');
-    return;
+async function speakBlockWithPiper(index, runId) {
+  speechState.mode = 'server-piper';
+  if (speechState.audio) {
+    try {
+      speechState.audio.onended = null;
+      speechState.audio.onerror = null;
+      speechState.audio.pause();
+    } catch {
+      // ignore
+    }
   }
+  try {
+    const urlPromise = prefetchPiperBlock(index);
+    // Pré-carrega o próximo parágrafo em paralelo para zero pausa entre blocos
+    if (index + 1 < speechState.blocks.length) prefetchPiperBlock(index + 1);
+    const blobUrl = await urlPromise;
+    if (!speechState.active || speechState.paused || speechState.runId !== runId) return;
+    const audio = new Audio(blobUrl);
+    audio.playbackRate = speechState.rate;
+    speechState.audio = audio;
+    audio.onended = () => {
+      if (!speechState.active || speechState.paused || speechState.runId !== runId) return;
+      speakBlockAt(index + 1);
+    };
+    audio.onerror = () => {
+      if (!speechState.active || speechState.runId !== runId) return;
+      speakBlockAt(index + 1);
+    };
+    await audio.play();
+  } catch (err) {
+    if (!speechState.active || speechState.runId !== runId) return;
+    showToast(`Falha na voz local (Piper): ${err?.message || err}`, 'warn');
+    stopBrowserSpeech();
+  }
+}
+
+function speakBlockAt(index) {
   if (index >= speechState.blocks.length) {
     stopBrowserSpeech();
     showToast('Leitura em voz alta concluída.', 'ok');
@@ -131,6 +211,17 @@ function speakBlockAt(index) {
   item.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   updateSpeechToolbarUi();
 
+  if (shouldUseServerPiper()) {
+    speakBlockWithPiper(index, runId);
+    return;
+  }
+
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+    showToast('Este navegador não suporta síntese de voz (speechSynthesis).', 'warn');
+    return;
+  }
+
+  speechState.mode = 'browser';
   try {
     window.speechSynthesis.cancel();
   } catch {
@@ -155,22 +246,34 @@ function speakBlockAt(index) {
 }
 
 function startOrToggleBrowserSpeech(startIdx = null) {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+  if (!state.serverMode && (typeof window === 'undefined' || !('speechSynthesis' in window))) {
     showToast('Este navegador não suporta leitura em voz alta.', 'warn');
     return;
   }
   if (startIdx === null && speechState.active && !speechState.paused) {
     speechState.paused = true;
     speechState.runId += 1;
-    try {
-      window.speechSynthesis.cancel();
-    } catch {
-      // ignore
+    if (speechState.mode === 'server-piper' && speechState.audio) {
+      try { speechState.audio.pause(); } catch { /* ignore */ }
+    } else if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
     }
     updateSpeechToolbarUi();
     return;
   }
   if (startIdx === null && speechState.active && speechState.paused) {
+    if (speechState.mode === 'server-piper' && speechState.audio) {
+      speechState.paused = false;
+      const runId = ++speechState.runId;
+      speechState.audio.playbackRate = speechState.rate;
+      speechState.audio.onended = () => {
+        if (!speechState.active || speechState.paused || speechState.runId !== runId) return;
+        speakBlockAt(speechState.idx + 1);
+      };
+      updateSpeechToolbarUi();
+      speechState.audio.play().catch(() => speakBlockAt(speechState.idx));
+      return;
+    }
     speakBlockAt(speechState.idx);
     return;
   }
@@ -190,6 +293,7 @@ function startOrToggleBrowserSpeech(startIdx = null) {
     showToast('Nenhum texto encontrado para ler.', 'warn');
     return;
   }
+  clearServerSpeechAudio();
   speechState.blocks = blocks;
   speakBlockAt(startIdx !== null ? Math.max(0, Math.min(startIdx, blocks.length - 1)) : 0);
 }
@@ -1982,7 +2086,11 @@ export function renderScriptsView(container) {
       speechState.rate = next;
       updateSpeechToolbarUi();
       if (speechState.active && !speechState.paused) {
-        speakBlockAt(speechState.idx);
+        if (speechState.mode === 'server-piper' && speechState.audio) {
+          speechState.audio.playbackRate = next;
+        } else {
+          speakBlockAt(speechState.idx);
+        }
       }
     };
   }

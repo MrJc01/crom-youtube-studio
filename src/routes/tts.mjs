@@ -11,6 +11,7 @@ import {
   prepareNarrationText,
   saveVoicePreset,
   streamNarrationAudio,
+  synthesizeQuickSpeechWav,
   updateNarrationMeta,
 } from '../tts.mjs';
 import { readRefContent } from '../versioning.mjs';
@@ -64,6 +65,20 @@ export async function handleTtsRoutes({
       charCount: preparedText.length,
       wordCount: preparedText ? preparedText.split(/\s+/).filter(Boolean).length : 0,
     });
+  }
+
+  if (method === 'POST' && pathname === '/api/tts/speak') {
+    const body = await readJsonBody(req);
+    const wavBuf = await synthesizeQuickSpeechWav(body.text || '', {
+      kdenliveRoot: config.kdenliveRoot,
+    });
+    res.writeHead(200, {
+      'Content-Type': 'audio/wav',
+      'Content-Length': wavBuf.length,
+      'Cache-Control': 'no-store',
+    });
+    res.end(wavBuf);
+    return;
   }
 
   if (method === 'POST' && pathname === '/api/tts/generate') {
